@@ -1,0 +1,397 @@
+
+
+<div id="pageBody" class="pt_pageBody">
+
+    {% if dev_mode %}
+    <script type="module" src="{{ vite_host }}/@vite/client"></script>
+    {% else %}
+    <link rel="stylesheet" href="{{ static_path }}/css/pt.css">
+    {% endif %}
+
+    <!--?{#    <link rel="preload" href="/api/data/portfolio-meta/?portfolio_key={{ context }}&preload=1" as="fetch" crossorigin />#}-->
+
+    <div id="portfolioBody" class="at-top" style="display:none">
+        <div id="pt-header-status-wrapper">
+            <div id="pt-header-status" class="colored-pill pt-header-pill" tabindex="0"></div>
+            <div id="connected-users-avatars" class="pt-connected-users-avatars"></div>
+            <div class="pt-status-dropdown"></div>
+        </div>
+        <div class="shadow-overlay shadow-overlay-top"></div>
+        <div id="portfolio-content-shadow" data-overlayscrollbars-initialize>
+            <div id="portfolio-content">
+                <div class="scroll-buffer"></div>
+                <div id="portfolio-top-two-rows">
+                    <div class="header-row">
+                        <div id="pt-header-info">
+                            <div id="pt-header-left-column">
+                                <div class="pt-header-title">
+                                    <div id="pt-header-client-name-wrapper">
+                                        <div id="pt-header-client-name"></div>
+                                        <div class="line-fill"></div>
+                                    </div>
+                                    <div class="pt-header-right">
+                                        <div id="pt-header-direction" class="colored-pill pt-header-pill"></div>
+                                        <div id="pt-header-size" class="colored-pill pt-header-pill"></div>
+                                        <div id="pt-header-net" class="colored-pill pt-header-pill" style="display:none"></div>
+                                        <div id="pt-header-count" class="colored-pill pt-header-pill" style="display:none"></div>
+                                    </div>
+                                </div>
+                                <div id="pt-header-sub-items-wrapper">
+                                    <div class="pt-header-sub-items"></div>
+                                    <!--?                                    <div class="line-fill"></div>-->
+                                </div>
+                            </div>
+                            <div id="pt-header-right-column">
+
+                            </div>
+                        </div>
+                    </div>
+
+                    <div id="content-row" class="content-row">
+                        <div id="toolbar" class="toolbar">
+                            <div class="toolbar-top">
+                                <div class="toolbar-button toolbar-widget tooltip tooltip-right active" data-tooltip="Overview" data-name="overviewWidget">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+                                        <g fill="none">
+                                            <path fill-rule="evenodd" clip-rule="evenodd"
+                                                  d="M5 9a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5zm0 13a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5zm10 0a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-4zm0-8a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4z"
+                                                  fill="currentColor"/>
+                                        </g>
+                                    </svg>
+                                </div>
+                                <div id="pivotToolbarBtn" class="toolbar-button toolbar-widget tooltip-right" data-tooltip="Pivot" data-name="pivotWidget">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M10 8V3h9q.825 0 1.413.588T21 5v3zM5 21q-.825 0-1.412-.587T3 19v-9h5v11zM3 8V5q0-.825.588-1.412T5 3h3v5zm9.85 11l.875.9q.275.275.275.688t-.3.712q-.275.275-.7.275t-.7-.275l-2.6-2.6q-.3-.3-.3-.7t.3-.7l2.6-2.6q.275-.275.688-.287t.712.287q.275.275.288.688t-.263.712l-.875.9H15q.825 0 1.413-.587T17 15v-2.2l-.9.9q-.275.275-.7.275t-.7-.275t-.275-.7t.275-.7l2.6-2.6q.3-.3.7-.3t.7.3l2.6 2.6q.275.275.275.7t-.275.7t-.7.275t-.7-.275l-.9-.9V15q0 1.65-1.175 2.825T15 19z"/></svg>
+                                </div>
+                                <div class="toolbar-button toolbar-widget tooltip-right" data-tooltip="Scripting" data-name="scriptWidget">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M13.5 2c0 .444-.193.843-.5 1.118V5h5a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3h5V3.118A1.5 1.5 0 1 1 13.5 2M0 10h2v6H0zm24 0h-2v6h2zM9 14.5a1.5 1.5 0 1 0 0-3a1.5 1.5 0 0 0 0 3m7.5-1.5a1.5 1.5 0 1 0-3 0a1.5 1.5 0 0 0 3 0"/></svg>
+                                </div>
+                                <!--?                                <div class="toolbar-button tooltip-right" data-tooltip="Similar Portfolios" data-name="similarPortfoliosWidget">-->
+                                <!--?                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">-->
+                                <!--?                                        <path fill="currentColor"-->
+                                <!--?                                              d="M10 21H5q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h5V2q0-.425.288-.712T11 1t.713.288T12 2v20q0 .425-.288.713T11 23t-.712-.288T10 22zm-5-3h5v-6zm9 3v-9l5 6V5h-5V3h5q.825 0 1.413.588T21 5v14q0 .825-.587 1.413T19 21z"/>-->
+                                <!--?                                    </svg>-->
+                                <!--?                                </div>-->
+                                <!--?                                <div class="toolbar-button tooltip-right" data-tooltip="Benchmark Spotting" data-name="benchmarkSpottingWidget">-->
+                                <!--?                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">-->
+                                <!--?                                        <path fill="currentColor" d="M2 2h2v20H2V2zm4 4h2v16H6V6zm4-2h2v18h-2V4zm4 6h2v12h-2V10zm4-4h2v16h-2V6z"/>-->
+                                <!--?                                    </svg>-->
+                                <!--?                                </div>-->
+                                <!--?                                <div class="toolbar-button tooltip-right" data-tooltip="Booking">-->
+                                <!--?                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M2 16.144V4.998c0-1.098.886-1.99 1.982-1.923c.977.06 2.131.179 3.018.412c1.05.277 2.296.867 3.282 1.388c.307.163.634.275.968.339v15.179a3.4 3.4 0 0 1-.878-.324c-1-.532-2.29-1.15-3.372-1.436c-.877-.231-2.016-.35-2.985-.41C2.906 18.153 2 17.255 2 16.143m10.75 4.25a3.4 3.4 0 0 0 .878-.324c1-.532 2.29-1.15 3.372-1.436c.877-.231 2.016-.35 2.985-.41c1.109-.07 2.015-.968 2.015-2.08V4.934c0-1.072-.846-1.953-1.918-1.915c-1.129.04-2.535.156-3.582.47c-.908.271-1.965.816-2.826 1.315a3.5 3.5 0 0 1-.924.37z"/></svg>-->
+                                <!--?                                </div>-->
+
+                                <div id="refresh-widget-sidebar-btn" class="toolbar-button toolbar-widget tooltip-right" data-tooltip="Update Data" data-name="refreshWidget">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="m17.5 20.1l-1.45-1.45q-.15-.15-.35-.15t-.35.15t-.15.35t.15.35l1.95 1.95q.15.15.325.213t.375.062t.375-.062t.325-.213l1.95-1.95q.15-.15.15-.35t-.15-.35t-.35-.15t-.35.15L18.5 20.1v-3.6q0-.2-.15-.35T18 16t-.35.15t-.15.35zm-4.975-7.325q.25-.075.475-.2l5.075-2.925q.35-.2.45-.612t-.1-.763t-.6-.45t-.75.1L12 10.85L6.925 7.925q-.35-.2-.75-.1t-.6.45t-.087.763t.462.612L11 12.575q.225.125.475.2t.525.075t.525-.075M3 15.975v-7.95q0-.55.263-1T4 6.3l7-4.025q.25-.125.488-.2T12 2t.525.075t.475.2L20 6.3q.475.275.738.725t.262 1v3.4q0 .45-.375.7t-.8.125t-.888-.187T18 12q-2.9 0-4.95 2.05T11 19v.513q0 .237.05.437q.1.625-.363.975T9.726 21L4 17.7q-.475-.275-.737-.725t-.263-1m11.463 6.563Q13 21.075 13 19t1.463-3.537T18 14t3.538 1.463T23 19t-1.463 3.538T18 24t-3.537-1.463"/></svg>
+                                </div>
+
+<!--?                                <div id="admin-tools-sidebar-btn" class="toolbar-button toolbar-widget tooltip-right" data-tooltip="Admin Tools" data-name="adminTools">-->
+<!--?                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 36 36">-->
+<!--?                                        <circle cx="14.67" cy="8.3" r="6" fill="currentColor"-->
+<!--?                                                class="clr-i-solid clr-i-solid-path-1"/>-->
+<!--?                                        <path fill="currentColor"-->
+<!--?                                              d="M16.44 31.82a2.15 2.15 0 0 1-.38-2.55l.53-1l-1.09-.33a2.14 2.14 0 0 1-1.5-2.1v-2.05a2.16 2.16 0 0 1 1.53-2.07l1.09-.33l-.52-1a2.17 2.17 0 0 1 .35-2.52a19 19 0 0 0-2.32-.16A15.58 15.58 0 0 0 2 23.07v7.75a1 1 0 0 0 1 1z"-->
+<!--?                                              class="clr-i-solid clr-i-solid-path-2"/>-->
+<!--?                                        <path fill="currentColor"-->
+<!--?                                              d="m33.7 23.46l-2-.6a6.7 6.7 0 0 0-.58-1.42l1-1.86a.35.35 0 0 0-.07-.43l-1.45-1.46a.38.38 0 0 0-.43-.07l-1.85 1a7.7 7.7 0 0 0-1.43-.6l-.61-2a.38.38 0 0 0-.36-.25h-2.08a.38.38 0 0 0-.35.26l-.6 2a7 7 0 0 0-1.45.61l-1.81-1a.38.38 0 0 0-.44.06l-1.47 1.44a.37.37 0 0 0-.07.44l1 1.82a7.2 7.2 0 0 0-.65 1.43l-2 .61a.36.36 0 0 0-.26.35v2.05a.36.36 0 0 0 .26.35l2 .61a7.3 7.3 0 0 0 .6 1.41l-1 1.9a.37.37 0 0 0 .07.44L19.16 32a.38.38 0 0 0 .44.06l1.87-1a7 7 0 0 0 1.4.57l.6 2.05a.38.38 0 0 0 .36.26h2.05a.38.38 0 0 0 .35-.26l.6-2.05a6.7 6.7 0 0 0 1.38-.57l1.89 1a.38.38 0 0 0 .44-.06L32 30.55a.38.38 0 0 0 .06-.44l-1-1.88a7 7 0 0 0 .57-1.38l2-.61a.39.39 0 0 0 .27-.35v-2.07a.4.4 0 0 0-.2-.36m-8.83 4.72a3.34 3.34 0 1 1 3.33-3.34a3.34 3.34 0 0 1-3.33 3.34"-->
+<!--?                                              class="clr-i-solid clr-i-solid-path-3"/>-->
+<!--?                                        <path fill="none" d="M0 0h36v36H0z"/>-->
+<!--?                                    </svg>-->
+<!--?                                </div>-->
+
+                                <div id="meta-sidebar-btn" class="toolbar-button tooltip-right" data-tooltip="Meta Editor">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M5.5 7A1.5 1.5 0 0 1 4 5.5A1.5 1.5 0 0 1 5.5 4A1.5 1.5 0 0 1 7 5.5A1.5 1.5 0 0 1 5.5 7m15.91 4.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.11 0-2 .89-2 2v7c0 .55.22 1.05.59 1.41l8.99 9c.37.36.87.59 1.42.59s1.05-.23 1.41-.59l7-7c.37-.36.59-.86.59-1.41c0-.56-.23-1.06-.59-1.42"/></svg>
+                                </div>
+
+                                <hr class="toolbar-divider">
+
+                                <div id="push-to-kdb-sidebar-btn" class="toolbar-button tooltip-right" data-tooltip="Push to KDB">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="currentColor" d="M17.5 16.9v3.6q0 .2.15.35T18 21t.35-.15t.15-.35v-3.6l1.45 1.45q.15.15.35.15t.35-.15t.15-.35t-.15-.35L18.7 15.7q-.3-.3-.7-.3t-.7.3l-1.95 1.95q-.15.15-.15.35t.15.35t.35.15t.35-.15zM11.675 21q-1.825-.025-3.4-.35t-2.75-.862t-1.85-1.25T3 17q0 .825.675 1.537t1.85 1.25t2.75.863t3.4.35m-.375-5q-.95-.05-1.838-.162t-1.687-.3t-1.5-.438T5 14.525q.575.325 1.275.575t1.5.438t1.688.3T11.3 16m.7-6.975q2.225 0 4.475-.663T19 7.025q-.275-.725-2.512-1.375T12 5q-2.275 0-4.462.638T5 7.025q.35.675 2.538 1.338T12 9.025M18 23q-2.075 0-3.537-1.463T13 18t1.463-3.537T18 13t3.538 1.463T23 18t-1.463 3.538T18 23m-6.925-4.025q.075.55.225 1.05t.375.975q-1.825-.025-3.4-.35t-2.75-.862t-1.85-1.25T3 17V7q0-1.65 2.638-2.825T12 3t6.363 1.175T21 7v4.675q-.475-.225-.975-.375T19 11.075v-1.55q-1.3.725-3.1 1.1T12 11q-2.125 0-3.925-.375T5 9.525v2.525q1.275 1.175 3.262 1.563T12 14h.275q-.325.45-.562.95T11.3 16q-1.9-.1-3.525-.462T5 14.525V17q.175.325.75.663t1.4.6t1.838.45t2.087.262"/></svg>
+                                </div>
+
+                                <div id="reload-sidebar-btn" class="toolbar-button tooltip-right" data-tooltip="Refresh Markets">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><g fill="none"><path d="m12.594 23.258l-.012.002l-.071.035l-.02.004l-.014-.004l-.071-.036q-.016-.004-.024.006l-.004.01l-.017.428l.005.02l.01.013l.104.074l.015.004l.012-.004l.104-.074l.012-.016l.004-.017l-.017-.427q-.004-.016-.016-.018m.264-.113l-.014.002l-.184.093l-.01.01l-.003.011l.018.43l.005.012l.008.008l.201.092q.019.005.029-.008l.004-.014l-.034-.614q-.005-.019-.02-.022m-.715.002a.02.02 0 0 0-.027.006l-.006.014l-.034.614q.001.018.017.024l.015-.002l.201-.093l.01-.008l.003-.011l.018-.43l-.003-.012l-.01-.01z"/><path fill="currentColor" d="M20 9.5a1.5 1.5 0 0 1 1.5 1.5a8.5 8.5 0 0 1-8.5 8.5h-2.382a1.5 1.5 0 0 1-2.179 2.06l-2.494-2.494a1.5 1.5 0 0 1-.445-1.052v-.028c.003-.371.142-.71.368-.97l.071-.077l2.5-2.5a1.5 1.5 0 0 1 2.18 2.061H13a5.5 5.5 0 0 0 5.5-5.5A1.5 1.5 0 0 1 20 9.5m-4.44-7.06l2.5 2.5a1.5 1.5 0 0 1 0 2.12l-2.5 2.5a1.5 1.5 0 0 1-2.178-2.06H11A5.5 5.5 0 0 0 5.5 13a1.5 1.5 0 1 1-3 0A8.5 8.5 0 0 1 11 4.5h2.382a1.5 1.5 0 0 1 2.179-2.06Z"/></g></svg>
+                                </div>
+
+                            </div>
+
+                            <div id="toolbar-minimize" class="minimize-button toolbar-button">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">
+                                    <path fill="currentColor"
+                                          d="M8.2 14q-.225 0-.362-.15T7.7 13.5q0-.05.15-.35l3.625-3.625q.125-.125.25-.175T12 9.3t.275.05t.25.175l3.625 3.625q.075.075.113.163t.037.187q0 .2-.137.35T15.8 14z"/>
+                                </svg>
+                            </div>
+                        </div>
+                        <div class="upper-ref-market-section">
+
+                            <div id="top-upper-controls">
+
+                                <div id="upper-btns">
+                                    <div class="ref-control-group">
+                                        <label>
+                                            <span class="ref-control-left">
+                                                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24"><path fill="currentColor" d="M5 13h6V9H5zm0-6h14V5H5zm9 15q-.425 0-.712-.288T13 21v-1.25q0-.4.163-.763t.437-.637l4.925-4.925q.225-.225.5-.325t.55-.1q.3 0 .575.113t.5.337l.925.925q.2.225.313.5t.112.55t-.1.563t-.325.512l-4.925 4.925q-.275.275-.637.425t-.763.15zm6.5-6.575l-.925-.925zM5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h14q.825 0 1.413.588T21 5v5.175q0 .425-.288.713t-.712.287t-.712-.288t-.288-.712V9h-6v4h1.9q.35 0 .475.3t-.125.55l-3.4 3.4q-.25.25-.55.125T11 16.9V15H5v4h5q.425 0 .713.288T11 20t-.288.713T10 21zm0-2v-4zm8-6V9zm1.5 7.5h.95l3.025-3.05l-.925-.925l-3.05 3.025zm3.525-3.525l-.475-.45l.925.925z"/></svg>
+                                                <p>Ref. Mkts</p>
+                                            </span>
+                                        </label>
+                                    </div>
+                                    <div class="ref-dropdown dropdown" id="portfolio-refmkt-wrapper">
+                                        <button class="btn btn-sm refmkt-btn" id="refmkt-btn">
+                                            <span class="radio-header">Ref Market</span>
+                                            <span id="current-ref-mkt"></span>
+                                        </button>
+                                        <div id="my-dropdown-container"></div>
+                                    </div>
+                                    <div class="ref-dropdown dropdown" id="portfolio-quote-type">
+                                        <button class="btn btn-sm portfolio-quote-type-btn" id="portfolio-quote-type-btn">
+                                            <span>Quote Type</span>
+                                            <span id="portfolio-current-quote-type">Client Req.</span>
+                                        </button>
+                                        <ul class="dropdown-content quote-type-menu" id="portfolio-quote-type-dropdown">
+                                            <li class="quote-types" data-type="client">Client Req.</li>
+                                            <li class="quote-types" data-type="convention">Convention</li>
+                                            <li class="quote-types" data-type="price">Price</li>
+                                            <li class="quote-types" data-type="spread">Spread</li>
+                                            <li class="quote-types" data-type="mmy">MMY</li>
+                                            <li class="quote-types" data-type="dm">DM</li>
+                                            <li class="quote-types" data-type="cash">Clean Proceeds</li>
+                                            <li class="quote-types" data-type="dirty_cash">Dirty Proceeds</li>
+                                            <li class="quote-types" data-type="yld">Yield</li>
+                                            <li class="quote-types" data-type="bps">Price Bps (vs Bid)</li>
+                                            <li class="quote-types" data-type="bpsMid">Price Bps (vs Mid)</li>
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                <div id="ref-radio-section">
+                                    <div class="ref-side-groups ref-radio-groups">
+                                        <div class="ref-side-title ref-group-title optgroup-header">
+                                            <p class="optgroup-header-text">Side</p>
+                                            <span class="divider-line"></span>
+                                        </div>
+                                        <div class="pt-right pt-radio-sides optgroup" id="pivot-sides-group" role="radiogroup">
+                                            <div id="pt-radio-sides-left">
+                                                <label  class="radio-pill option"><input type="radio" value="Auto" name="side-weight"><span>Auto</span></label>
+                                                <label  class="radio-pill option"><input type="radio" value="Mid" name="side-weight" checked><span>Mid</span></label>
+                                            </div>
+                                            <div id="pt-radio-sides-right">
+                                                <label  class="radio-pill option"><input type="radio" value="Bid" name="side-weight" ><span>Bid</span></label>
+                                                <label  class="radio-pill option"><input type="radio" value="Ask" name="side-weight" ><span>Ask</span></label>
+                                            </div>
+
+                                        </div>
+                                    </div>
+
+                                    <div class="ref-weight-groups ref-radio-groups">
+                                        <div class="ref-weight-title ref-group-title optgroup-header">
+                                            <p class="optgroup-header-text">Weight</p>
+                                            <span class="divider-line"></span>
+                                        </div>
+                                        <div class="pt-right optgroup" id="pivot-weight-group" role="radiogroup" aria-label="WAvg Weight">
+
+                                            <label class="option">
+                                                <input type="radio" id="weightNotional" name="pivot-weight" value="notional"><span>Notional</span>
+                                            </label>
+
+                                            <label class="option">
+                                                <input type="radio" id="weightDv01" name="pivot-weight" value="dv01"><span>DV01</span>
+                                            </label>
+
+                                            <!--?                                    <label  class="radio-pill"><input type="radio" id="weightCount" name="pivot-weight" value="count">Count</label>-->
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div id="copy-panel">
+                                <div id="overview-string-button-wrapper">
+                                    <button class="btn btn-sm btn-icon copy-button tooltip-top" id="copy-summary-btn" data-tooltip="Copy Full">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256"><path d="M92,92a12,12,0,0,1,12-12h60a12,12,0,0,1,0,24H104A12,12,0,0,1,92,92Zm12,52h60a12,12,0,0,0,0-24H104a12,12,0,0,0,0,24Zm132,48a36,36,0,0,1-36,36H88a36,36,0,0,1-36-36V64a12,12,0,0,0-24,0c0,3.73,3.35,6.51,3.38,6.54l-.18-.14h0A12,12,0,1,1,16.81,89.59h0C15.49,88.62,4,79.55,4,64A36,36,0,0,1,40,28H176a36,36,0,0,1,36,36V164h4a12,12,0,0,1,7.2,2.4C224.51,167.38,236,176.45,236,192ZM92.62,172.2A12,12,0,0,1,104,164h84V64a12,12,0,0,0-12-12H73.94A35.88,35.88,0,0,1,76,64V192a12,12,0,0,0,24,0c0-3.58-3.17-6.38-3.2-6.4A12,12,0,0,1,92.62,172.2ZM212,192a7.69,7.69,0,0,0-1.24-4h-87a30.32,30.32,0,0,1,.26,4,35.84,35.84,0,0,1-2.06,12H200A12,12,0,0,0,212,192Z"></path></svg>
+                                    </button>
+                                    <button class="btn btn-sm btn-icon copy-button tooltip-top" data-tooltip="Copy Short" id="copy-summary-btn-short" >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M4 7v14h14v2H4c-1.1 0-2-.9-2-2V7zm16-4c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H8c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2h3.18C11.6 1.84 12.7 1 14 1s2.4.84 2.82 2zm-6 0c-.55 0-1 .45-1 1s.45 1 1 1s1-.45 1-1s-.45-1-1-1m-4 4V5H8v12h12V5h-2v2m-3 8h-5v-2h5m3-2h-8V9h8z"/></svg>
+                                    </button>
+                                    <button class="btn btn-sm btn-icon copy-button tooltip-top" data-tooltip="Copy Link" id="copy-link-btn" >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256"><path d="M117.18,188.74a12,12,0,0,1,0,17l-5.12,5.12A58.26,58.26,0,0,1,70.6,228h0A58.62,58.62,0,0,1,29.14,127.92L63.89,93.17a58.64,58.64,0,0,1,98.56,28.11,12,12,0,1,1-23.37,5.44,34.65,34.65,0,0,0-58.22-16.58L46.11,144.89A34.62,34.62,0,0,0,70.57,204h0a34.41,34.41,0,0,0,24.49-10.14l5.11-5.12A12,12,0,0,1,117.18,188.74ZM226.83,45.17a58.65,58.65,0,0,0-82.93,0l-5.11,5.11a12,12,0,0,0,17,17l5.12-5.12a34.63,34.63,0,1,1,49,49L175.1,145.86A34.39,34.39,0,0,1,150.61,156h0a34.63,34.63,0,0,1-33.69-26.72,12,12,0,0,0-23.38,5.44A58.64,58.64,0,0,0,150.56,180h.05a58.28,58.28,0,0,0,41.47-17.17l34.75-34.75a58.62,58.62,0,0,0,0-82.91Z"></path></svg>
+                                    </button>
+                                    <button class="btn btn-sm btn-icon copy-button tooltip-top" data-tooltip="Copy Key" id="copy-key-btn" >
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 256 256"><path d="M196,76a16,16,0,1,1-16-16A16,16,0,0,1,196,76Zm48,22.74A84.3,84.3,0,0,1,160.11,180H160a83.52,83.52,0,0,1-23.65-3.38l-7.86,7.87A12,12,0,0,1,120,188H108v12a12,12,0,0,1-12,12H84v12a12,12,0,0,1-12,12H40a20,20,0,0,1-20-20V187.31a19.86,19.86,0,0,1,5.86-14.14l53.52-53.52A84,84,0,1,1,244,98.74ZM202.43,53.57A59.48,59.48,0,0,0,158,36c-32,1-58,27.89-58,59.89a59.69,59.69,0,0,0,4.2,22.19,12,12,0,0,1-2.55,13.21L44,189v23H60V200a12,12,0,0,1,12-12H84V176a12,12,0,0,1,12-12h19l9.65-9.65a12,12,0,0,1,13.22-2.55A59.58,59.58,0,0,0,160,156h.08c32,0,58.87-26.07,59.89-58A59.55,59.55,0,0,0,202.43,53.57Z"></path></svg>
+                                    </button>
+                                </div>
+                                <div class="venue-wrapper">
+                                    <button class="btn btn-primary btn-sm" id="venue-copy-btn">COPY SUBMISSION</button>
+                                    <div class="dropdown" id="venue-caret">
+                                        <button class="btn btn-sm btn-primary">
+                                            <svg class="w-4 h-4" fill="currentColor" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                                                <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/>
+                                            </svg>
+                                        </button>
+                                        <ul class="dropdown-content quote-type-menu">
+                                            <li class="quote-types" data-venue="mx">Market Axess</li>
+                                            <li class="quote-types" data-venue="tw">Tradeweb</li>
+                                            <li class="quote-types" data-venue="bbg">Bloomberg</li>
+                                            <li class="quote-types" data-venue="tm">Trumid</li>
+                                            <li class="quote-types" data-venue="ib">IB</li>
+                                        </ul>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="content-area">
+
+                            <div id="overviewWidget" class="tab-content active">
+                            </div>
+
+                            <div id="pivotWidget" class="tab-content">
+
+                            </div>
+
+                            <div id="heatmapWidget" class="tab-content">
+
+                            </div>
+
+                            <div id="scriptWidget" class="tab-content"></div>
+
+                            <div id="bondInsightsWidget" class="tab-content">
+                                <div class="bond-widget">
+                                    <!-- Widget Header -->
+                                </div>
+                            </div>
+
+                            <div id="metaWidget" class="tab-content"></div>
+
+                            <div id="similarPortfoliosWidget" class="tab-content"></div>
+
+                            <div id="benchmarkSpottingWidget" class="tab-content">
+                                <!-- Benchmark Spotting content -->
+                            </div>
+
+                            {#                            <div id="historicalAnalysisWidget" class="tab-content">#}
+                            {#                                <!-- Historical Analysis content -->#}
+                            {#                                <h3>Historical Analysis</h3>#}
+                            {#                                <div class="historical-charts"></div>#}
+                            {#                            </div>#}
+
+                            <div id="bulkSkewWidget" class="tab-content">
+                                <!-- Bulk Shift content -->
+                            </div>
+
+                            {#                            <div id="compositionWidget" class="tab-content">#}
+                            {#                                <!-- Composition content -->#}
+                            {#                                <h3>Composition</h3>#}
+                            {#                                <div class="composition-breakdown"></div>#}
+                            {#                            </div>#}
+
+                            {#                            <div id="marketsWidget" class="tab-content">#}
+                            {#                                <!-- Markets content -->#}
+                            {#                                <h3>Markets</h3>#}
+                            {#                                <div class="market-data"></div>#}
+                            {#                            </div>#}
+                            {##}
+                            {#                            <div id="bookingWidget" class="tab-content">#}
+                            {#                                <!-- Booking content -->#}
+                            {#                                <h3>Booking</h3>#}
+                            {#                                <div class="booking-form"></div>#}
+                            {#                            </div>#}
+
+                            <div id="adminToolsWidget" class="tab-content"></div>
+                            <div id="refreshWidget" class="tab-content"></div>
+
+                            <div id="settingsWidget" class="tab-content">
+                                <!-- Settings content -->
+                                <h3>Settings</h3>
+                                <div class="settings-form"></div>
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+                <div id="portfolio-pricing-grid">
+                    <div id="portfolio-grid-tools">
+                        <div id="grid-search" class="ag-search-bar">
+                            <div class="ag-search-bar-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24">
+                                    <g fill="none">
+                                        <path class="search-glass-icon search-glass-icon-inner" fill="currentColor" d="M19 11a8 8 0 1 1-16 0a8 8 0 0 1 16 0" opacity=".16"/>
+                                        <path class="search-glass-icon" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="m21 21l-4.343-4.343m0 0A8 8 0 1 0 5.343 5.343a8 8 0 0 0 11.314 11.314"/>
+                                        <line stroke="currentColor" class="x-line x-line1" x1="6" y1="6" x2="18" y2="18" />
+                                        <line stroke="currentColor" class="x-line x-line2" x1="6" y1="18" x2="18" y2="6" />
+                                    </g>
+                                </svg>
+                            </div>
+                            <label for="pt-quick-filter-text" id="pt-quick-filter" class="quick-filter">
+                                <input type="text" name="pt-quick-filter-text" id="pt-quick-filter-text" class="ag-search-bar-input"
+                                       placeholder="Search portfolio..."/>
+                            </label>
+                        </div>
+                        <div id="grid-toolbar-buttons">
+                            <button class="pt-state-btn tooltip-top toolbar-main-button" id="pt-clearFilters" data-tooltip="Clear Filters">
+                                <div id="filterStateWrapper">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 256 256" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path
+                                                d="M227.82,66.76A16,16,0,0,0,216,40H40A16,16,0,0,0,28.19,66.76l.08.09L96,139.17V216a16,16,0,0,0,24.87,13.32l32-21.34A16,16,0,0,0,160,194.66V139.17l67.73-72.32ZM40,56h0Zm106.19,74.59A8,8,0,0,0,144,136v58.66L112,216V136a8,8,0,0,0-2.16-5.46L40,56H216Zm99.49,79.81a8,8,0,0,1-11.32,11.32L216,203.32l-18.34,18.35a8,8,0,0,1-11.31-11.32L204.69,192l-18.34-18.35a8,8,0,0,1,11.31-11.31L216,180.69l18.34-18.34a8,8,0,0,1,11.32,11.31L227.31,192Z"
+                                        ></path>
+                                    </svg>
+                                </div>
+                            </button>
+
+                            <div id="lower-btns">
+                                <div class="ref-dropdown dropdown" id="portfolio-refmkt-wrapper-lower">
+                                    <button class="btn btn-sm refmkt-btn" id="refmkt-btn-lower">
+                                        <span class="radio-header">Ref Market</span>
+                                        <span id="current-ref-mkt-lower"></span>
+                                    </button>
+                                    <div id="my-dropdown-container-lower"></div>
+                                </div>
+
+                                <div class="ref-dropdown dropdown" id="portfolio-quote-type-lower">
+                                    <button class="btn btn-sm portfolio-quote-type-btn" id="portfolio-quote-type-btn-lower">
+                                        <span>Quote Type</span>
+                                        <span id="portfolio-current-quote-type-lower">Client Req.</span>
+                                    </button>
+                                    <ul class="dropdown-content quote-type-menu" id="portfolio-quote-type-dropdown-lower">
+                                        <li class="quote-types" data-type="client">Client Req.</li>
+                                        <li class="quote-types" data-type="convention">Convention</li>
+                                        <li class="quote-types" data-type="price">Price</li>
+                                        <li class="quote-types" data-type="spread">Spread</li>
+                                        <li class="quote-types" data-type="mmy">MMY</li>
+                                        <li class="quote-types" data-type="dm">DM</li>
+                                        <li class="quote-types" data-type="cash">Clean Proceeds</li>
+                                        <li class="quote-types" data-type="dirty_cash">Dirty Proceeds</li>
+                                        <li class="quote-types" data-type="yld">Yield</li>
+                                        <li class="quote-types" data-type="bps">Price Bps (vs Bid)</li>
+                                        <li class="quote-types" data-type="bpsMid">Price Bps (vs Mid)</li>
+                                    </ul>
+                                </div>
+                            </div>
+                            <button class="pt-state-btn tooltip-top toolbar-main-button tree-control-btn" id="saveState-outside" data-tooltip="Save Config">
+                                <div id="saveStateWrapper-outside">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24"><path fill="currentColor" d="M5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h11.175q.4 0 .763.15t.637.425l2.85 2.85q.275.275.425.638t.15.762V19q0 .825-.587 1.413T19 21zM19 7.85L16.15 5H5v14h14zM12 18q1.25 0 2.125-.875T15 15t-.875-2.125T12 12t-2.125.875T9 15t.875 2.125T12 18m-5-8h7q.425 0 .713-.288T15 9V7q0-.425-.288-.712T14 6H7q-.425 0-.712.288T6 7v2q0 .425.288.713T7 10M5 7.85V19V5z"/></svg>
+                                </div>
+                            </button>
+                            <button class="pt-state-btn tooltip-top" id="settingsBtn" data-tooltip="Settings">
+                                <lord-icon src="/assets/lottie/cog-hover-2.json" trigger="hover" class="current-color" stroke="currentColor" style="width: 20px; height: 20px;"></lord-icon>
+                            </button>
+                        </div>
+                    </div>
+                    {#                    <div id="portfolio-grid-arrow" class="ag-grid-container ag-theme-alpine"></div>#}
+                    <div id="portfolio-grid" class="ag-grid-container ag-theme-alpine"></div>
+
+                </div>
+                <div class="scroll-buffer"></div>
+            </div>
+        </div>
+        <div class="shadow-overlay shadow-overlay-bottom"></div>
+        <div id="auto-scroll-down">
+            <!--?            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24">-->
+            <!--?                <path fill="currentColor"-->
+            <!--?                      d="M12 14.975q-.2 0-.375-.062T11.3 14.7l-4.6-4.6q-.275-.275-.275-.7t.275-.7t.7-.275t.7.275l3.9 3.9l3.9-3.9q.275-.275.7-.275t.7.275t.275.7t-.275.7l-4.6 4.6q-.15.15-.325.213t-.375.062"/>-->
+            <!--?            </svg>-->
+
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Tabler Icons by Paweł Kuna - https://github.com/tabler/tabler-icons/blob/master/LICENSE --><path fill="currentColor" d="M11.293 7.293a1 1 0 0 1 1.32-.083l.094.083l6 6l.083.094l.054.077l.054.096l.017.036l.027.067l.032.108l.01.053l.01.06l.004.057L19 14l-.002.059l-.005.058l-.009.06l-.01.052l-.032.108l-.027.067l-.07.132l-.065.09l-.073.081l-.094.083l-.077.054l-.096.054l-.036.017l-.067.027l-.108.032l-.053.01l-.06.01l-.057.004L18 15H6c-.852 0-1.297-.986-.783-1.623l.076-.084z"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Tabler Icons by Paweł Kuna - https://github.com/tabler/tabler-icons/blob/master/LICENSE --><path fill="currentColor" d="M11.293 7.293a1 1 0 0 1 1.32-.083l.094.083l6 6l.083.094l.054.077l.054.096l.017.036l.027.067l.032.108l.01.053l.01.06l.004.057L19 14l-.002.059l-.005.058l-.009.06l-.01.052l-.032.108l-.027.067l-.07.132l-.065.09l-.073.081l-.094.083l-.077.054l-.096.054l-.036.017l-.067.027l-.108.032l-.053.01l-.06.01l-.057.004L18 15H6c-.852 0-1.297-.986-.783-1.623l.076-.084z"/></svg>
+        </div>
+    </div>
+
+</div>
+
+

@@ -1,0 +1,741 @@
+
+
+<!DOCTYPE html>
+<html lang="en" data-theme="light" data-theme-variant="cool">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Portfolio Webtool</title>
+
+    <!-- Fonts ------------------------------------>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+
+    <!-- Inter ------------------------------------>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Montserrat:ital,wght@0,100..900;1,100..900&display=swap" rel="stylesheet">
+
+    <!-- UI Frameworks  -------------------------->
+    <style>:root{color-scheme: only light;}</style>
+    <!--?        <link href="https://cdn.jsdelivr.net/npm/daisyui@4.7.2/dist/full.min.css" rel="stylesheet" type="text/css" />-->
+    <!--?        <script src="https://cdn.tailwindcss.com"></script>-->
+
+    <script>
+        window.static_path = "{{ static_path }}";
+        window.vite_host = "{{ vite_host }}"
+        window.dev_mode = {{ dev_mode|tojson }};
+        window.page_name = {{ page|tojson }};
+    </script>
+
+    <!-- Third-party Libraries (non-module) -------------------------->
+    <!--        <script src="{{ static_path }}/js/jquery.min.js"></script>-->
+    <!--        <script src="{{ static_path }}/js/moment.min.js"></script>-->
+    <!--        <script src="{{ static_path }}/js/moment-business.min.js"></script>-->
+
+    <!-- Development Mode -->
+    {% if dev_mode %}
+
+    <script type="module" src="{{ vite_host }}/@vite/client"></script>
+    <link rel="stylesheet" href="{{ vite_host }}/global/css/styles.css">
+    <script type="module" src="{{ vite_host }}/global/js/global.js"></script>
+    <script type="module" src="{{ vite_host }}/global/js/frame.js"></script>
+
+    {% else %}
+    <script type="module" src="{{ static_path }}/js/global.js"></script>
+    <script type="module" src="{{ static_path }}/js/frame.js"></script>
+    <link rel="stylesheet" href="{{ static_path }}/css/global.css">
+    <link rel="stylesheet" href="{{ static_path }}/css/frame.css">
+
+<!--?    <link rel="preload" href="{{ static_path }}/css/pt.css" as="style" />-->
+<!--?    <link rel="preload" href="{{ static_path }}/css/homepage.css" as="style" />-->
+    {% endif %}
+
+</head>
+
+<body class="p-0 m-0">
+<nav class="navbar text-base-100">
+    <div class="navbar-frame noselect">
+        <div id="frame-navbar-left-side">
+            <div id="nav-header" title="Made by Cade Zawacki">
+            <div style="padding: 0; justify-content: center; margin-left:5px">
+                <svg id="barclays-logo" class="logo hidden" width="30px" style="cursor: pointer;" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                    <path
+                            d="M21.043 3.629a3.235 3.235 0 0 0-1.048-.54 3.076 3.076 0 0 0-.937-.144h-.046c-.413.006-1.184.105-1.701.71a1.138 1.138 0 0 0-.226 1.023.9.9 0 0 0 .555.63s.088.032.228.058c-.04.078-.136.214-.136.214-.179.265-.576.612-1.668.612h-.063c-.578-.038-1.056-.189-1.616-.915-.347-.45-.523-1.207-.549-2.452-.022-.624-.107-1.165-.256-1.6-.1-.29-.333-.596-.557-.742a2.55 2.55 0 0 0-.694-.336c-.373-.12-.848-.14-1.204-.146-.462-.01-.717.096-.878.292-.027.033-.032.05-.068.046-.084-.006-.272-.006-.328-.006-.264 0-.498.043-.721.09-.47.1-.761.295-1.019.503-.12.095-.347.365-.399.653a.76.76 0 0 0 .097.578c.14-.148.374-.264.816-.266.493-.002 1.169.224 1.406.608.336.547.27.99.199 1.517-.183 1.347-.68 2.048-1.783 2.203-.191.026-.38.04-.56.04-.776 0-1.34-.248-1.63-.716a.71.71 0 0 1-.088-.168s.087-.021.163-.056c.294-.14.514-.344.594-.661.09-.353.004-.728-.23-1.007-.415-.47-.991-.708-1.713-.708-.4 0-.755.076-.982.14-.908.256-1.633.947-2.214 2.112-.412.824-.7 1.912-.81 3.067-.11 1.13-.056 2.085.019 2.949.124 1.437.363 2.298.708 3.22a15.68 15.68 0 0 0 1.609 3.19c.09-.094.15-.161.308-.318.188-.19.724-.893.876-1.11.19-.27.51-.779.664-1.147l.15.119c.16.127.252.348.249.592-.003.215-.053.464-.184.922a8.703 8.703 0 0 1-.784 1.818c-.189.341-.27.508-.199.584.015.015.038.03.06.026.116 0 .34-.117.585-.304.222-.17.813-.672 1.527-1.675a15.449 15.449 0 0 0 1.452-2.521c.12.046.255.101.317.226a.92.92 0 0 1 .08.563c-.065.539-.379 1.353-.63 1.94-.425.998-1.208 2.115-1.788 2.877-.022.03-.163.197-.186.227.9.792 1.944 1.555 3.007 2.136.725.408 2.203 1.162 3.183 1.424.98-.262 2.458-1.016 3.184-1.424a17.063 17.063 0 0 0 3.003-2.134c-.05-.076-.13-.158-.183-.23-.582-.763-1.365-1.881-1.79-2.875-.25-.59-.563-1.405-.628-1.94-.028-.221-.002-.417.08-.565.033-.098.274-.218.317-.226.405.884.887 1.73 1.452 2.522.715 1.003 1.306 1.506 1.527 1.674.248.191.467.304.586.304a.07.07 0 0 0 .044-.012c.094-.069.017-.234-.183-.594a9.003 9.003 0 0 1-.786-1.822c-.13-.456-.18-.706-.182-.92-.004-.246.088-.466.248-.594l.15-.118c.155.373.5.919.665 1.147.15.216.685.919.876 1.11.156.158.22.222.308.32a15.672 15.672 0 0 0 1.609-3.19c.343-.923.583-1.784.707-3.222.075-.86.128-1.81.02-2.948-.101-1.116-.404-2.264-.81-3.068-.249-.49-.605-1.112-1.171-1.566z"
+                    />
+                </svg>
+            </div>
+            <span class="text-xl montserrat-bold" style="font-size: 1.4rem; margin-left: 10px; user-select:none">Portfolio</span>
+            <span class="text-xl montserrat-light" style="font-size: 1.4rem; user-select:none">Webtool</span>
+            {% if dev_mode %}
+            <div style="margin-left:0.25rem">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"><!-- Icon from Material Symbols by Google - https://github.com/google/material-design-icons/blob/master/LICENSE --><path fill="currentColor" d="M8.4 15q.475 0 .813-.337t.337-.813v-3.7q0-.475-.337-.812T8.4 9H6.75q-.325 0-.537.213T6 9.75v4.5q0 .325.213.538T6.75 15zm-1.25-1.15v-3.7H8.4v3.7zM10.875 15h1.9q.225 0 .388-.175t.162-.425q0-.225-.162-.388t-.388-.162h-1.5v-1.3H12q.25 0 .413-.162t.162-.413t-.162-.412T12 11.4h-.725v-1.25h1.475q.25 0 .413-.162t.162-.413t-.162-.412T12.75 9h-1.875q-.325 0-.537.213t-.213.537v4.5q0 .325.213.538t.537.212m5.15-.025q.325 0 .563-.213t.312-.537l1.2-4.5q.075-.275-.1-.5T17.55 9q-.2 0-.363.113t-.212.312l-.95 3.675l-.975-3.675q-.05-.2-.2-.312T14.5 9q-.275 0-.45.225t-.1.5l1.2 4.5q.075.325.313.538t.562.212M5 21q-.825 0-1.412-.587T3 19V5q0-.825.588-1.412T5 3h14q.825 0 1.413.588T21 5v14q0 .825-.587 1.413T19 21z"/></svg>
+            </div>
+            {% endif %}
+
+        </div>
+        </div>
+        <div id="frame-navbar-right-side">
+            <div id="frame-pricing-progress">
+                <div id="progress-flow-group">
+                    <div id="pricing-progress-bar-container" class="pricing-progress-container" style="opacity:0">
+                        <div id="pricing-progress-bar" class="progress-bar"></div>
+                        <span id="pricing-progress-bar-pct" class="progress-bar-pct"></span>
+                        <span id="pricing-progress-bar-count" class="progress-bar-count"></span>
+                    </div>
+                </div>
+                <div class="value" id="frame-skew"></div>
+            </div>
+
+            <div id="feedbackWindow" class="feedbackWindow feedback-container hidden">
+                <button id="feedbackBtn" class="feedback-btn">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                    </svg>
+                    Feedback
+                </button>
+                <div id="feedbackDropdown" class="feedback-dropdown">
+                    <div class="dropdown-header">
+                        <h3>Send Feedback</h3>
+                        <p>Help improve the Portfolio Webtool</p>
+                    </div>
+
+                    <div id="optionsView" class="feedback-options">
+                        <div class="feedback-option" data-type="bug">
+                            <div class="option-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Report a Bug</strong>
+                                <p>Something is broken</p>
+                            </div>
+                        </div>
+                        <div class="feedback-option" data-type="idea">
+                            <div class="option-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Suggest an Idea</strong>
+                                <p>Thoughts and suggestions</p>
+                            </div>
+                        </div>
+                        <div class="feedback-option" data-type="other">
+                            <div class="option-icon">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                                </svg>
+                            </div>
+                            <div>
+                                <strong>Something Else</strong>
+                                <p>Anything else / say hello to Cade.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Form View -->
+                    <div id="formView" class="feedback-form">
+                        <div class="form-header">
+                            <button id="backBtn" class="back-btn">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                    <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                                </svg>
+                            </button>
+                            <h3 id="formTitle" class="form-title">Report a Bug</h3>
+                        </div>
+                        <textarea id="feedbackText" class="form-textarea" placeholder="Please describe your feedback in detail..."></textarea>
+                        <div class="b-wrapper"><button id="submitBtn" class="submit-btn">Send Feedback</button></div>
+                    </div>
+
+                    <!-- Success View -->
+                    <div id="successView" class="success-message">
+                        <div class="success-icon">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                            </svg>
+                        </div>
+                        <h3 class="success-title">Thank You!</h3>
+                        <p class="success-text">Your feedback has been submitted successfully.</p>
+                        <button id="closeBtn" class="close-btn">Close</button>
+                    </div>
+                </div>
+            </div>
+            <div id="nav-user" class="flex-none gap-2 mr-2">
+                <div class="dropdown dropdown-hover dropdown-end z-50 flex" id="profile-dropdown">
+                    <div tabindex="0" role="button" class="avatar-btn">
+                        <div class="avatar" style="opacity: 0;">
+                            <img id="user-avatar" class="" src="" alt="User Avatar" height="36" width="36"/>
+                            <div class="avatar-status status-online"></div>
+                        </div>
+                    </div>
+                    <ul tabindex="0" class="menu menu-sm dropdown-content">
+
+                        <li>
+                            <div id="avatar-dropdown-header" class="flex flex-col dropdown-item">
+                                <span id="user-name">Guest User</span>
+                                <span id="user-email">guest@example.com</span>
+                            </div>
+                        </li>
+                        <!--?                        <div class="dropdown-divider my-0"></div>-->
+                        <li>
+                            <a id="profile-button" class="dropdown-item">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                                Profile
+                            </a>
+                        </li>
+                        {#                <li>#}
+                        {#                    <a id="sync-button" class="dropdown-item">#}
+                        {#                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 12.05q0 1.125.425 2.188T7.75 16.2l.25.25V15q0-.425.288-.712T9 14t.713.288T10 15v4q0 .425-.288.713T9 20H5q-.425 0-.712-.288T4 19t.288-.712T5 18h1.75l-.4-.35q-1.3-1.15-1.825-2.625T4 12.05Q4 9.7 5.2 7.787T8.425 4.85q.35-.2.738-.025t.512.575q.125.375-.012.75t-.488.575q-1.45.8-2.312 2.213T6 12.05m12-.1q0-1.125-.425-2.187T16.25 7.8L16 7.55V9q0 .425-.288.713T15 10t-.712-.288T14 9V5q0-.425.288-.712T15 4h4q.425 0 .713.288T20 5t-.288.713T19 6h-1.75l.4.35q1.225 1.225 1.788 2.663T20 11.95q0 2.35-1.2 4.263t-3.225 2.937q-.35.2-.737.025t-.513-.575q-.125-.375.013-.75t.487-.575q1.45-.8 2.313-2.212T18 11.95"/></svg>#}
+                        {#                        Sync User Settings#}
+                        {#                    </a>#}
+                        {#                </li>#}
+                        <li style="display:none">
+                            <a id="settings-button" class="dropdown-item">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path
+                                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"
+                                    ></path>
+                                </svg>
+                                Settings
+                            </a>
+                        </li>
+                        <!--?                        <div class="dropdown-divider my-0"></div>-->
+                        <li>
+                            <a id="logout-button" class="dropdown-item text-error">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                                    <polyline points="16 17 21 12 16 7"></polyline>
+                                    <line x1="21" y1="12" x2="9" y2="12"></line>
+                                </svg>
+                                Logout
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div id="scratchpad-btn-wrapper">
+                <button id="scratchBtn" class="scratch-btn btn btn-sm btn-ghost">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 20 20"><path fill="currentColor" d="M7 7.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5m.5 2.5a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1zM7 13.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5m-1-11a.5.5 0 0 1 1 0V3h2.5v-.5a.5.5 0 0 1 1 0V3H13v-.5a.5.5 0 0 1 1 0V3h.5A1.5 1.5 0 0 1 16 4.5v4.732c-.326.14-.632.342-.898.609L15 9.943V4.5a.5.5 0 0 0-.5-.5h-9a.5.5 0 0 0-.5.5v12a.5.5 0 0 0 .5.5h3.72l-.163.653q-.044.176-.054.347H5.5A1.5 1.5 0 0 1 4 16.5v-12A1.5 1.5 0 0 1 5.5 3H6zm9.81 8.048l-4.83 4.83a2.2 2.2 0 0 0-.578 1.02l-.375 1.498a.89.89 0 0 0 1.079 1.078l1.498-.374a2.2 2.2 0 0 0 1.02-.578l4.83-4.83a1.87 1.87 0 0 0-2.645-2.644"/></svg>
+                </button>
+            </div>
+            <div id="theme-manager" class="swap swap-rotate no-fade">
+                <div id="theme-controller" class="theme-controller"></div>
+            </div>
+        </div>
+    </div>
+
+</nav>
+<div id="overlay" class="overlay"></div>
+<div class="drawer sm:drawer-closed">
+    <input id="frame-sidebar" type="checkbox" class="drawer-toggle" />
+    <div id="drawer-sidebar" class="collapsed-sidebar hidden">
+        <label for="frame-sidebar" aria-label="close sidebar" class="drawer-overlay"></label>
+        <ul class="menu text-base-content min-h-full">
+            <li class="sidebar-button tooltip-right" data-tooltip="Homepage">
+                <div id="homepage-live-pt-badge" class=""></div>
+                <a class="sidebar-button-wrapper">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 576 512"><path fill="currentColor" d="M280.37 148.26L96 300.11V464a16 16 0 0 0 16 16l112.06-.29a16 16 0 0 0 15.92-16V368a16 16 0 0 1 16-16h64a16 16 0 0 1 16 16v95.64a16 16 0 0 0 16 16.05L464 480a16 16 0 0 0 16-16V300L295.67 148.26a12.19 12.19 0 0 0-15.3 0M571.6 251.47L488 182.56V44.05a12 12 0 0 0-12-12h-56a12 12 0 0 0-12 12v72.61L318.47 43a48 48 0 0 0-61 0L4.34 251.47a12 12 0 0 0-1.6 16.9l25.5 31A12 12 0 0 0 45.15 301l235.22-193.74a12.19 12.19 0 0 1 15.3 0L530.9 301a12 12 0 0 0 16.9-1.6l25.5-31a12 12 0 0 0-1.7-16.93"/></svg>
+                </a>
+            </li>
+
+            <!--?                    <li class="sidebar-button tooltip-right" data-tooltip="Charts">-->
+            <!--?                        <a class="sidebar-button-wrapper">-->
+            <!--?                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 544 512"><path fill="currentColor" d="M527.79 288H290.5l158.03 158.03c6.04 6.04 15.98 6.53 22.19.68c38.7-36.46 65.32-85.61 73.13-140.86c1.34-9.46-6.51-17.85-16.06-17.85m-15.83-64.8C503.72 103.74 408.26 8.28 288.8.04C279.68-.59 272 7.1 272 16.24V240h223.77c9.14 0 16.82-7.68 16.19-16.8M224 288V50.71c0-9.55-8.39-17.4-17.84-16.06C86.99 51.49-4.1 155.6.14 280.37C4.5 408.51 114.83 513.59 243.03 511.98c50.4-.63 96.97-16.87 135.26-44.03c7.9-5.6 8.42-17.23 1.57-24.08z"/></svg>-->
+            <!--?                        </a>-->
+            <!--?                    </li>-->
+
+                                <li class="sidebar-button tooltip-right" data-tooltip="Upload">
+                                    <a class="sidebar-button-wrapper">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M9.8 21.75q-3.425-.775-5.613-3.5T2 12t2.188-6.25T9.8 2.25q.475-.125.838.175t.362.8q0 .35-.2.625t-.55.35Q7.5 4.825 5.75 7T4 12t1.75 5t4.5 2.8q.35.075.55.35t.2.625q0 .5-.362.8t-.838.175m4.4 0q-.475.125-.837-.175t-.363-.8q0-.35.2-.625t.55-.35q.675-.15 1.313-.413t1.212-.637q.275-.2.613-.15t.587.3q.35.35.3.813t-.45.737q-.725.45-1.513.775t-1.612.525m4.7-4.25q-.25-.25-.3-.587t.15-.613q.375-.575.638-1.225t.412-1.325q.075-.35.35-.537t.625-.188q.5 0 .8.363t.175.837q-.2.825-.525 1.613t-.775 1.512q-.275.4-.737.45t-.813-.3m1.875-6.5q-.35 0-.625-.2t-.35-.55q-.15-.675-.413-1.312t-.637-1.213q-.2-.3-.15-.637t.3-.588q.35-.35.813-.3t.737.475q.45.725.775 1.513T21.75 9.8q.125.475-.175.838t-.8.362m-4.5-5.75q-.575-.375-1.212-.638T13.75 4.2q-.35-.075-.55-.35t-.2-.625q0-.5.363-.8t.837-.175q.825.2 1.613.525t1.512.775q.425.275.475.738t-.3.812q-.25.25-.587.3t-.638-.15M11.975 17q-.425 0-.712-.288T10.975 16v-5.125l-1.875 1.9q-.3.3-.712.3t-.713-.3t-.312-.712t.287-.713l3.625-3.65q.275-.275.7-.275t.7.275l3.575 3.575q.3.3.313.725t-.288.725t-.725.3t-.725-.3l-1.85-1.85V16q0 .425-.287.713t-.713.287"/></svg>
+                                    </a>
+                                </li>
+
+            <!--?                    <li class="sidebar-button tooltip-right" data-tooltip="Blotter">-->
+            <!--?                        <a class="sidebar-button-wrapper">-->
+            <!--?                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 640 512"><path fill="currentColor" d="M48 0C21.53 0 0 21.53 0 48v64c0 8.84 7.16 16 16 16h80V48C96 21.53 74.47 0 48 0m208 412.57V352h288V96c0-52.94-43.06-96-96-96H111.59C121.74 13.41 128 29.92 128 48v368c0 38.87 34.65 69.65 74.75 63.12C234.22 474 256 444.46 256 412.57M288 384v32c0 52.93-43.06 96-96 96h336c61.86 0 112-50.14 112-112c0-8.84-7.16-16-16-16z"/></svg>-->
+            <!--?                        </a>-->
+            <!--?                    </li>-->
+
+            <!--?                    <li class="sidebar-button tooltip-right" data-tooltip="Logs">-->
+            <!--?                        <a class="sidebar-button-wrapper">-->
+            <!--?                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 448 512"><path fill="currentColor" d="M43.246 466.142c-58.43-60.289-57.341-157.511 1.386-217.581L254.392 34c44.316-45.332 116.351-45.336 160.671 0c43.89 44.894 43.943 117.329 0 162.276L232.214 383.128c-29.855 30.537-78.633 30.111-107.982-.998c-28.275-29.97-27.368-77.473 1.452-106.953l143.743-146.835c6.182-6.314 16.312-6.422 22.626-.241l22.861 22.379c6.315 6.182 6.422 16.312.241 22.626L171.427 319.927c-4.932 5.045-5.236 13.428-.648 18.292c4.372 4.634 11.245 4.711 15.688.165l182.849-186.851c19.613-20.062 19.613-52.725-.011-72.798c-19.189-19.627-49.957-19.637-69.154 0L90.39 293.295c-34.763 35.56-35.299 93.12-1.191 128.313c34.01 35.093 88.985 35.137 123.058.286l172.06-175.999c6.177-6.319 16.307-6.433 22.626-.256l22.877 22.364c6.319 6.177 6.434 16.307.256 22.626l-172.06 175.998c-59.576 60.938-155.943 60.216-214.77-.485"/></svg>-->
+            <!--?                        </a>-->
+            <!--?                    </li>-->
+            <!--?                    <li class="sidebar-button tooltip-right" data-tooltip="Status">-->
+            <!--?                        <a class="sidebar-button-wrapper">-->
+            <!--?                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 640 512"><path fill="currentColor" d="M150.94 192h33.73c11.01 0 18.61-10.83 14.86-21.18c-4.93-13.58-7.55-27.98-7.55-42.82s2.62-29.24 7.55-42.82C203.29 74.83 195.68 64 184.67 64h-33.73c-7.01 0-13.46 4.49-15.41 11.23C130.64 92.21 128 109.88 128 128s2.64 35.79 7.54 52.76c1.94 6.74 8.39 11.24 15.4 11.24M89.92 23.34C95.56 12.72 87.97 0 75.96 0H40.63c-6.27 0-12.14 3.59-14.74 9.31C9.4 45.54 0 85.65 0 128c0 24.75 3.12 68.33 26.69 118.86c2.62 5.63 8.42 9.14 14.61 9.14h34.84c12.02 0 19.61-12.74 13.95-23.37c-49.78-93.32-16.71-178.15-.17-209.29M614.06 9.29C611.46 3.58 605.6 0 599.33 0h-35.42c-11.98 0-19.66 12.66-14.02 23.25c18.27 34.29 48.42 119.42.28 209.23c-5.72 10.68 1.8 23.52 13.91 23.52h35.23c6.27 0 12.13-3.58 14.73-9.29C630.57 210.48 640 170.36 640 128s-9.42-82.48-25.94-118.71M489.06 64h-33.73c-11.01 0-18.61 10.83-14.86 21.18c4.93 13.58 7.55 27.98 7.55 42.82s-2.62 29.24-7.55 42.82c-3.76 10.35 3.85 21.18 14.86 21.18h33.73c7.02 0 13.46-4.49 15.41-11.24c4.9-16.97 7.53-34.64 7.53-52.76s-2.64-35.79-7.54-52.76c-1.94-6.75-8.39-11.24-15.4-11.24m-116.3 100.12c7.05-10.29 11.2-22.71 11.2-36.12c0-35.35-28.63-64-63.96-64c-35.32 0-63.96 28.65-63.96 64c0 13.41 4.15 25.83 11.2 36.12l-130.5 313.41c-3.4 8.15.46 17.52 8.61 20.92l29.51 12.31c8.15 3.4 17.52-.46 20.91-8.61L244.96 384h150.07l49.2 118.15c3.4 8.16 12.76 12.01 20.91 8.61l29.51-12.31c8.15-3.4 12-12.77 8.61-20.92zM271.62 320L320 203.81L368.38 320z"/></svg>-->
+            <!--?                        </a>-->
+            <!--?                    </li>-->
+
+            <!--?                    <li class="sidebar-button tooltip-right" data-tooltip="Messaging">-->
+            <!--?                        <a class="sidebar-button-wrapper">-->
+            <!--?                            <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 576 512"><path fill="currentColor" d="M416 192c0-88.4-93.1-160-208-160S0 103.6 0 192c0 34.3 14.1 65.9 38 92c-13.4 30.2-35.5 54.2-35.8 54.5c-2.2 2.3-2.8 5.7-1.5 8.7S4.8 352 8 352c36.6 0 66.9-12.3 88.7-25c32.2 15.7 70.3 25 111.3 25c114.9 0 208-71.6 208-160m122 220c23.9-26 38-57.7 38-92c0-66.9-53.5-124.2-129.3-148.1c.9 6.6 1.3 13.3 1.3 20.1c0 105.9-107.7 192-240 192c-10.8 0-21.3-.8-31.7-1.9C207.8 439.6 281.8 480 368 480c41 0 79.1-9.2 111.3-25c21.8 12.7 52.1 25 88.7 25c3.2 0 6.1-1.9 7.3-4.8c1.3-2.9.7-6.3-1.5-8.7c-.3-.3-22.4-24.2-35.8-54.5"/></svg>-->
+            <!--?                        </a>-->
+            <!--?                    </li>-->
+
+            <li class="sidebar-button tooltip-right" data-tooltip="Hotkeys">
+                <a class="sidebar-button-wrapper">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M3 20q-.825 0-1.412-.587T1 18V6q0-.825.588-1.412T3 4h18q.825 0 1.413.588T23 6v12q0 .825-.587 1.413T21 20zm5-3h8v-2H8zm-3-3.5h2v-2H5zm4 0h2v-2H9zm4 0h2v-2h-2zm4 0h2v-2h-2zM5 10h2V8H5zm4 0h2V8H9zm4 0h2V8h-2zm4 0h2V8h-2z"/></svg>
+                </a>
+            </li>
+
+            <li class="sidebar-button tooltip-right" data-tooltip="Settings">
+                <a class="sidebar-button-wrapper">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 640 512"><path fill="currentColor" d="m512.1 191l-8.2 14.3c-3 5.3-9.4 7.5-15.1 5.4c-11.8-4.4-22.6-10.7-32.1-18.6c-4.6-3.8-5.8-10.5-2.8-15.7l8.2-14.3c-6.9-8-12.3-17.3-15.9-27.4h-16.5c-6 0-11.2-4.3-12.2-10.3c-2-12-2.1-24.6 0-37.1c1-6 6.2-10.4 12.2-10.4h16.5c3.6-10.1 9-19.4 15.9-27.4l-8.2-14.3c-3-5.2-1.9-11.9 2.8-15.7c9.5-7.9 20.4-14.2 32.1-18.6c5.7-2.1 12.1.1 15.1 5.4l8.2 14.3c10.5-1.9 21.2-1.9 31.7 0L552 6.3c3-5.3 9.4-7.5 15.1-5.4c11.8 4.4 22.6 10.7 32.1 18.6c4.6 3.8 5.8 10.5 2.8 15.7l-8.2 14.3c6.9 8 12.3 17.3 15.9 27.4h16.5c6 0 11.2 4.3 12.2 10.3c2 12 2.1 24.6 0 37.1c-1 6-6.2 10.4-12.2 10.4h-16.5c-3.6 10.1-9 19.4-15.9 27.4l8.2 14.3c3 5.2 1.9 11.9-2.8 15.7c-9.5 7.9-20.4 14.2-32.1 18.6c-5.7 2.1-12.1-.1-15.1-5.4l-8.2-14.3c-10.4 1.9-21.2 1.9-31.7 0m-10.5-58.8c38.5 29.6 82.4-14.3 52.8-52.8c-38.5-29.7-82.4 14.3-52.8 52.8M386.3 286.1l33.7 16.8c10.1 5.8 14.5 18.1 10.5 29.1c-8.9 24.2-26.4 46.4-42.6 65.8c-7.4 8.9-20.2 11.1-30.3 5.3l-29.1-16.8c-16 13.7-34.6 24.6-54.9 31.7v33.6c0 11.6-8.3 21.6-19.7 23.6c-24.6 4.2-50.4 4.4-75.9 0c-11.5-2-20-11.9-20-23.6V418c-20.3-7.2-38.9-18-54.9-31.7L74 403c-10 5.8-22.9 3.6-30.3-5.3c-16.2-19.4-33.3-41.6-42.2-65.7c-4-10.9.4-23.2 10.5-29.1l33.3-16.8c-3.9-20.9-3.9-42.4 0-63.4L12 205.8c-10.1-5.8-14.6-18.1-10.5-29c8.9-24.2 26-46.4 42.2-65.8c7.4-8.9 20.2-11.1 30.3-5.3l29.1 16.8c16-13.7 34.6-24.6 54.9-31.7V57.1c0-11.5 8.2-21.5 19.6-23.5c24.6-4.2 50.5-4.4 76-.1c11.5 2 20 11.9 20 23.6v33.6c20.3 7.2 38.9 18 54.9 31.7l29.1-16.8c10-5.8 22.9-3.6 30.3 5.3c16.2 19.4 33.2 41.6 42.1 65.8c4 10.9.1 23.2-10 29.1l-33.7 16.8c3.9 21 3.9 42.5 0 63.5m-117.6 21.1c59.2-77-28.7-164.9-105.7-105.7c-59.2 77 28.7 164.9 105.7 105.7m243.4 182.7l-8.2 14.3c-3 5.3-9.4 7.5-15.1 5.4c-11.8-4.4-22.6-10.7-32.1-18.6c-4.6-3.8-5.8-10.5-2.8-15.7l8.2-14.3c-6.9-8-12.3-17.3-15.9-27.4h-16.5c-6 0-11.2-4.3-12.2-10.3c-2-12-2.1-24.6 0-37.1c1-6 6.2-10.4 12.2-10.4h16.5c3.6-10.1 9-19.4 15.9-27.4l-8.2-14.3c-3-5.2-1.9-11.9 2.8-15.7c9.5-7.9 20.4-14.2 32.1-18.6c5.7-2.1 12.1.1 15.1 5.4l8.2 14.3c10.5-1.9 21.2-1.9 31.7 0l8.2-14.3c3-5.3 9.4-7.5 15.1-5.4c11.8 4.4 22.6 10.7 32.1 18.6c4.6 3.8 5.8 10.5 2.8 15.7l-8.2 14.3c6.9 8 12.3 17.3 15.9 27.4h16.5c6 0 11.2 4.3 12.2 10.3c2 12 2.1 24.6 0 37.1c-1 6-6.2 10.4-12.2 10.4h-16.5c-3.6 10.1-9 19.4-15.9 27.4l8.2 14.3c3 5.2 1.9 11.9-2.8 15.7c-9.5 7.9-20.4 14.2-32.1 18.6c-5.7 2.1-12.1-.1-15.1-5.4l-8.2-14.3c-10.4 1.9-21.2 1.9-31.7 0M501.6 431c38.5 29.6 82.4-14.3 52.8-52.8c-38.5-29.6-82.4 14.3-52.8 52.8"/></svg>
+                </a>
+            </li>
+{#            <li class="sidebar-button tooltip-right" data-tooltip="Sync With Backend">#}
+{#                <a class="sidebar-button-wrapper">#}
+{#                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"><path fill="currentColor" d="M6 12q0 1.35.538 2.488T8 16.45V15q0-.425.288-.712T9 14t.713.288T10 15v4q0 .425-.288.713T9 20H5q-.425 0-.712-.288T4 19t.288-.712T5 18h1.725q-1.275-1.1-2-2.65T4 12q0-2.375 1.237-4.275t3.213-2.9q.35-.2.725-.012t.5.587t-.038.775t-.512.575q-1.4.775-2.262 2.163T6 12m9 8q-1.25 0-2.125-.875T12 17q0-1.2.825-2.062t2.025-.913q.425-.9 1.263-1.463T18 12q1.325 0 2.288.863T21.45 15q1.05 0 1.8.725t.75 1.75q0 1.05-.725 1.788T21.5 20zm1-12.45V9q0 .425-.288.713T15 10t-.712-.288T14 9V5q0-.425.288-.712T15 4h4q.425 0 .713.288T20 5t-.288.713T19 6h-1.725q.825.725 1.438 1.663T19.65 9.7q.125.4-.1.725t-.65.4t-.762-.162t-.488-.638q-.25-.725-.675-1.35T16 7.55"/></svg>#}
+{#                </a>#}
+{#            </li>#}
+        </ul>
+    </div>
+    <div id="drawer-content" class="thin-scrollbar"></div>
+</div>
+<dialog id="settings-modal" class="modal">
+    <div class="modal-box">
+        <h3 class="font-bold text-lg mb-4">User Profile</h3>
+        <form id="settings-form">
+            <div class="grid grid-cols-2 gap-4">
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text required-field">First Name</span>
+                    </label>
+                    <input type="text" id="settings-firstname" class="input input-bordered" required />
+                </div>
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text required-field">Last Name</span>
+                    </label>
+                    <input type="text" id="settings-lastname" class="input input-bordered" required />
+                </div>
+            </div>
+
+            <div class="form-control mt-4">
+                <label class="label">
+                    <span class="label-text required-field">Barclays Email</span>
+                </label>
+                <input type="email" id="user-email-input" class="input input-bordered" placeholder="...@barclays.com" required />
+            </div>
+
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Nickname</span>
+                    </label>
+                    <input type="text" id="settings-nickname" class="input input-bordered" />
+                </div>
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text">Username</span>
+                    </label>
+                    <input type="text" id="settings-username" class="input input-bordered" />
+                </div>
+            </div>
+            <div class="grid grid-cols-2 gap-4 mt-4">
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text required-field">Region</span>
+                    </label>
+                    <select id="settings-region" class="select select-bordered" required>
+                        <option value="">Select...</option>
+                        <option value="nyk">New York</option>
+                        <option value="ldn">London</option>
+                        <option value="sgp">Singapore</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+                <div class="form-control">
+                    <label class="label">
+                        <span class="label-text required-field">Role</span>
+                    </label>
+                    <select id="settings-role" class="select select-bordered" required>
+                        <option value="">Select...</option>
+                        <option value="trading">Trading</option>
+                        <option value="sales">Sales</option>
+                        <option value="systematic">Systematic</option>
+                        <option value="research">Research</option>
+                        <option value="other">Other</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-control mt-4">
+                <label class="label">
+                    <span class="label-text">Avatar</span>
+                </label>
+                <div class="flex flex-col gap-4">
+                    <div class="flex items-center gap-4">
+                        <img id="current-avatar" src="" />
+                        <div class="flex flex-col gap-2">
+                            <div class="dropdown dropdown-top">
+                                <button type="button" id="change-avatar-style" class="btn btn-outline btn-sm">
+                                    Change Style
+                                    <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                    </svg>
+                                </button>
+                                <ul id="avatar-style-dropdown" class="p-2 shadow menu dropdown-content z-[1] bg-base-100 rounded-box w-52">
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="bottts-neutral">
+                                            <img class="w-10 h-10" />
+                                            <span>Robots</span>
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="initials">
+                                            <img class="w-10 h-10" />
+                                            <span>Initials</span>
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="avataaars-neutral">
+                                            <img class="w-10 h-10" />
+                                            <span>Faces</span>
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="pixel-art">
+                                            <img class="w-10 h-10" />
+                                            <span>Pixels</span>
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="notionists-neutral">
+                                            <img class="w-10 h-10" />
+                                            <span>Smileys</span>
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button type="button" class="avatar-style-option" data-type="shapes">
+                                            <img class="w-10 h-10" />
+                                            <span>Shapes</span>
+                                        </button>
+                                    </li>
+                                </ul>
+                            </div>
+                            <button type="button" class="btn btn-outline btn-sm" id="change-avatar">
+                                Randomize
+                                <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div method="dialog" class="modal-action">
+                <button id="cancel-profile" type="button" class="btn">Cancel</button>
+                <button class="btn btn-primary" id="save-profile" disabled>Save Changes</button>
+            </div>
+        </form>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+        <button>close</button>
+    </form>
+</dialog>
+
+<dialog id="logout-confirm-modal" class="modal">
+    <div class="modal-box">
+        <h3 class="font-bold text-lg">Confirm Logout</h3>
+        <p class="py-4">Are you sure you want to logout? You'll need to sign in again to access your profile.</p>
+        <div class="modal-action">
+            <form method="dialog">
+                <button class="btn mr-2">Cancel</button>
+                <button class="btn btn-primary" id="confirm-logout">Logout</button>
+            </form>
+        </div>
+    </div>
+    <form method="dialog" class="modal-backdrop">
+        <button>close</button>
+    </form>
+</dialog>
+
+<dialog id="new-user-modal" class="modal">
+    <div class="modal-box new-user-modal-content w-11/12 max-w-lg">
+        <div class="modal-screens-container">
+            <!-- ========================== -->
+            <!-- == Screen 1: Username == -->
+            <!-- ========================== -->
+            <div id="username-screen" class="modal-screen active">
+                <div class="u-upper">
+                    <div class="welcome-header">
+                        <lord-icon src="/assets/lottie/wave.json" trigger="in" delay="0" state="in-reveal" style="width: 48px; height: 48px;"></lord-icon>
+                        <h3 class="font-bold text-xl mb-2">
+                            Welcome!
+                        </h3>
+                        <p class="text-sm text-base-content/70">
+                            Let's get you setup to use the
+                            <b>Portfolio Webtool</b>
+                        </p>
+                        <p class="text-sm text-base-content/70 mb-6">
+                            You should only need to do this once. It'll be quick.
+                        </p>
+                    </div>
+                    <div class="form-control w-full">
+                        <div class="relative">
+                            <input type="text" id="username-input" class="input input-bordered w-full pr-10" placeholder="What is your Barclays username?" autocomplete="off" />
+                            <div class="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
+                                <!-- Loading Spinner (initially hidden) -->
+                                <span id="username-loading-spinner" class="loading loading-spinner loading-sm hidden"></span>
+                                <!-- Search Icon (initially shown) -->
+                                <svg id="username-search-icon" class="search-icon svg w-5 h-5 text-base-content/50" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd" />
+                                </svg>
+                            </div>
+                        </div>
+                        <!-- Suggestions Dropdown -->
+                        <div id="username-suggestions" class="absolute z-10 mt-1 w-full bg-base-200 rounded-md shadow-lg max-h-60 overflow-auto hidden">
+                            <ul class="py-1" id="username-suggestions-list">
+                            </ul>
+                        </div>
+                    </div>
+                    <div id="user-match-message" class="mt-4 text-sm hidden">
+                        <!-- Will be populated by JS -->
+                    </div>
+                </div>
+                <div class="u-lower">
+                    <div class="modal-action mt-6">
+                        <button id="username-continue-button" class="btn btn-primary w-full" disabled data-tooltip="Please enter a username">
+
+                            Continue
+
+                            <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <!-- ======================== -->
+            <!-- == Screen 2: Profile == -->
+            <!-- ======================== -->
+            <div id="profile-screen" class="modal-screen hidden">
+                <div class="welcome-header">
+                    <h3 class="font-bold text-xl mb-4">
+                        Complete Your Profile
+                    </h3>
+                </div>
+                <div class="form-control w-full">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <label class="label">
+                                <span class="label-text">First Name<span class="text-error">*</span></span>
+                            </label>
+                            <input type="text" id="firstname-input" class="input input-bordered w-full" required />
+                        </div>
+                        <div>
+                            <label class="label">
+                                <span class="label-text">Last Name<span class="text-error">*</span></span>
+                            </label>
+                            <input type="text" id="lastname-input" class="input input-bordered w-full" required />
+                        </div>
+                    </div>
+                    <div class="mt-2">
+                        <label class="label">
+                            <span class="label-text">Barclays Email<span class="text-error">*</span></span>
+                        </label>
+                        <input type="email" id="email-input" class="input input-bordered w-full" placeholder="...@barclays.com" required />
+                    </div>
+                    <div class="mt-2">
+                        <label class="label">
+                            <span class="label-text">Nickname<span class="text-base-content/50">(optional)</span></span>
+                        </label>
+                        <input type="text" id="nickname-input" class="input input-bordered w-full" />
+                    </div>
+                    <div class="grid grid-cols-2 gap-4 mt-4">
+                        <div>
+                            <label class="label">
+                                <span class="label-text">Region<span class="text-error">*</span></span>
+                            </label>
+                            <select id="region-input" class="select select-bordered w-full" required>
+                                <option value="" disabled selected>
+                                    Select...
+                                </option>
+                                <option value="nyk">
+                                    New York
+                                </option>
+                                <option value="ldn">
+                                    London
+                                </option>
+                                <option value="sgp">
+                                    Singapore
+                                </option>
+                                <option value="other">
+                                    Other
+                                </option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="label">
+                                <span class="label-text">Role <span class="text-error">*</span></span>
+                            </label>
+                            <select id="role-input" class="select select-bordered w-full" required>
+                                <option value="" disabled selected>Select...</option>
+                                <option value="trading">Trading</option>
+                                <option value="sales">Sales</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-action mt-6 mb-2 justify-between">
+                    <button id="profile-back-button" class="btn">
+                        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Back
+                    </button>
+                    <button id="profile-continue-button" class="btn btn-primary" disabled>
+                        Continue
+                        <svg class="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <!-- =========================== -->
+            <!-- == Screen 3: Customize == -->
+            <!-- =========================== -->
+            <div id="customize-screen" class="modal-screen hidden">
+                <div class="welcome-header">
+                    <h3 class="font-bold text-xl">
+                        Customize
+                    </h3>
+                    <span>You can edit these later</span>
+                </div>
+                <!-- Theme Selection -->
+                <div class="mb-6">
+                    <div class="flex justify-around items-center gap-4 mt-2">
+                        <button id="classic-theme-btn" class="theme-option btn btn-circle btn-outline h-20 w-20 flex flex-col" data-theme-target="light">
+                            <lord-icon src="/assets/lottie/light-theme.json" trigger="hover" delay="0" style="width: 28px; height: 28px;" target=".theme-option" class="current-color" loading="lazy"></lord-icon>
+                            Classic</button>
+                        <button id="cool-theme-btn" class="theme-option btn btn-circle btn-outline h-20 w-20 flex flex-col" data-theme-target="cool">
+                            <lord-icon src="/assets/lottie/cool-theme.json" trigger="hover" delay="0" style="width: 28px; height: 28px;" target=".theme-option" class="current-color" loading="lazy"></lord-icon>
+                            Cool</button>
+                        <button id="dark-theme-btn" class="theme-option btn btn-circle btn-outline h-20 w-20 flex flex-col" data-theme-target="dark">
+                            <lord-icon src="/assets/lottie/dark-theme.json" trigger="hover" delay="0" style="width: 28px; height: 28px;" target=".theme-option" class="current-color" loading="lazy"></lord-icon>
+                            Dark</button>
+                    </div>
+                </div>
+                <!-- Avatar Selection -->
+                <div id="onboarding-avatar-section" class="form-control mt-4">
+                    <label class="label"><span class="label-text font-medium">Choose an avatar</span></label>
+                    <div class="flex flex-col gap-4 mt-2">
+                        <div class="flex items-center gap-4">
+                            <img id="onboarding-current-avatar" class="w-16 h-16" src="https://api.dicebear.com/9.x/bottts-neutral/svg" />
+                            <div class="flex flex-col gap-2">
+                                <div class="dropdown dropdown-top">
+                                    <button id="onboarding-change-avatar-style" tabindex="0" role="button" class="btn btn-outline btn-sm">
+                                        Change Style
+                                        <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </button>
+                                    <ul id="onboarding-avatar-style-dropdown" tabindex="0" class="p-2 shadow menu dropdown-content z-[1] bg-base-100 rounded-box w-52">
+                                        <!-- Options will be populated by JS, similar structure -->
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="bottts-neutral">
+                                                <img class="w-8 h-8" />
+                                                <span>Robots</span>
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="initials">
+                                                <img class="w-8 h-8" />
+                                                <span>Initials</span>
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="avataaars-neutral">
+                                                <img class="w-8 h-8" />
+                                                <span>Faces</span>
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="pixel-art">
+                                                <img class="w-8 h-8" />
+                                                <span>Pixels</span>
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="notionists-neutral">
+                                                <img class="w-8 h-8" />
+                                                <span>Smileys</span>
+                                            </button>
+                                        </li>
+                                        <li>
+                                            <button class="onboarding-avatar-style-option avatar-style-option flex items-center gap-2 w-full text-left p-2 hover:bg-base-200 rounded" data-type="shapes">
+                                                <img class="w-8 h-8" />
+                                                <span>Shapes</span>
+                                            </button>
+                                        </li>
+                                    </ul>
+                                </div>
+                                <!-- *** ADDED ID *** -->
+                                <button class="btn btn-outline btn-sm" id="onboarding-randomize-avatar">Randomize
+                                    <svg class="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-action mt-8 mb-2 justify-between">
+                    <!-- *** ADDED ID *** -->
+                    <button id="customize-back-button" class="btn">
+                        <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Back
+                    </button>
+                    <!-- *** ADDED ID *** -->
+                    <button id="finish-setup-button" class="btn btn-primary">Create Profile
+                        <svg class="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7">
+                            </path>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</dialog>
+<div id="hidden-element"></div>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+
+        document.getElementById("barclays-logo").classList.remove('hidden');
+        document.getElementById("feedbackWindow").classList.remove('hidden');
+        document.querySelector("#drawer-sidebar").classList.remove('hidden');
+
+        if (!window.page_name.startsWith('pt')) {
+            window?.frame?.toggleSidebar();
+        }
+
+        // setTimeout(() => {
+        //
+        //     if (!window.page_name.startsWith('pt')) {
+        //         window?.frame?.toggleSidebar();
+        //     }
+        //     //setTimeout(()=>window.request_page(window.page_name), 300);
+        //
+        // }, 300);
+        // const sidebar = document.querySelector(`[data-tooltip="${window.page_name}" i]`);
+        // if (sidebar.length === 1) {
+        //     sidebar[0].classList.add('sidebar-button-selected');
+        // }
+    }, {once: true})
+</script>
+<div id="zero-element" style="display:none"></div>
+</body>
+</html>
+
