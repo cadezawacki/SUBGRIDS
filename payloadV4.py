@@ -852,7 +852,10 @@ class Message:
         18: 'execute',
         19: 'disconnect',
         20: 'fetch_columns',
-        21: 'fetch_schema'
+        21: 'fetch_schema',
+        22: 'micro_publish',
+        23: 'micro_subscribe',
+        24: 'micro_unsubscribe',
     })
 
     def __init__(self,
@@ -1213,6 +1216,67 @@ class Execute(BroadcastMessage):
     def __init__(self, **kwargs):
         super().__init__("execute", 18, **kwargs)
         if not _check_required(self.context): raise ValueError("Missing room context")
+
+# =============================================================================
+# Micro-Grid Messages
+# =============================================================================
+
+class MicroPublish:
+    """
+    Lightweight broadcast payload for micro-grid deltas.
+    Not a full BroadcastMessage — micro-grids use a simpler JSON-based protocol
+    instead of Arrow IPC columnar encoding.
+    """
+    __slots__ = (
+        "action", "micro_name", "payloads",
+        "based_on", "action_seq", "pk_columns",
+        "trace", "snapshot",
+    )
+
+    def __init__(
+        self,
+        micro_name: str,
+        *,
+        payloads: Optional[dict] = None,
+        based_on: int = 0,
+        action_seq: int = 0,
+        pk_columns: Optional[Tuple[str, ...]] = None,
+        trace: Optional[str] = None,
+        snapshot: Optional[list] = None,
+    ):
+        self.action = "micro_publish"
+        self.micro_name = micro_name
+        self.payloads = payloads or {}
+        self.based_on = based_on
+        self.action_seq = action_seq
+        self.pk_columns = pk_columns or ()
+        self.trace = trace
+        self.snapshot = snapshot
+
+    def to_dict(self) -> dict:
+        d = {
+            "action": self.action,
+            "micro_name": self.micro_name,
+            "data": {
+                "payloads": self.payloads,
+                "based_on": self.based_on,
+                "action_seq": self.action_seq,
+                "pk_columns": list(self.pk_columns) if self.pk_columns else [],
+            },
+            "context": {
+                "room": f"MICRO.{self.micro_name.upper()}",
+                "grid_id": f"micro_{self.micro_name}",
+            },
+        }
+        if self.trace:
+            d["trace"] = self.trace
+        if self.snapshot is not None:
+            d["data"]["snapshot"] = self.snapshot
+        return d
+
+    def package(self):
+        return self.to_dict()
+
 
 CLASS_BUILDERS = {
     "identify": Identify,

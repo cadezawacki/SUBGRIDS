@@ -157,6 +157,11 @@ export class SubscriptionManager {
             case 'fetch_schema': break;
             case 'control': await this._handleControlMessage(message); break;
             case 'ack': this._handleAcknowledgment(message); break;
+            case 'micro_publish':
+            case 'micro_subscribe':
+            case 'micro_unsubscribe':
+                await this._handleMicroGridMessage(message);
+                break;
             default: console.warn("Unknown action:", action, message);
         }
 
@@ -518,6 +523,64 @@ export class SubscriptionManager {
 
     async _handlePublishMessage(message) {
         if (message?.status?.code === 400) return;
+    }
+
+    // -------------------------------------------------------------------------
+    // Micro-grid message handling
+    // -------------------------------------------------------------------------
+
+    async _handleMicroGridMessage(message) {
+        const action = message?.action;
+        const microName = message?.micro_name;
+        if (!microName) return;
+
+        // Dispatch to registered room handlers using the micro topic as the room key
+        const topic = `MICRO.${microName.toUpperCase()}`;
+        const roomHandlers = this.messageHandlers.get(topic);
+        if (roomHandlers) {
+            const lowerAction = action.toLowerCase();
+            const handlers = roomHandlers.get(lowerAction);
+            if (handlers) {
+                for (const handler of new Set(handlers)) {
+                    queueMicrotask(() => {
+                        try { handler(message); }
+                        catch (e) { console.error(`[MicroGrid] Handler error (${microName}/${action}):`, e); }
+                    });
+                }
+            }
+        }
+    }
+
+    async microSubscribe(microName, {wait = false} = {}) {
+        const socketManager = this.getSocketManager();
+        if (!socketManager) return Promise.reject('SocketManager not available');
+        return socketManager._sendWebSocketMessage({
+            action: ACTION_MAP.get("micro_subscribe"),
+            micro_name: microName,
+        }, {wait});
+    }
+
+    async microUnsubscribe(microName) {
+        const socketManager = this.getSocketManager();
+        if (!socketManager) return Promise.reject('SocketManager not available');
+        // Remove handlers for this micro-grid topic
+        const topic = `MICRO.${microName.toUpperCase()}`;
+        this.removeAllHandlersForRoom(topic);
+        return socketManager._sendWebSocketMessage({
+            action: ACTION_MAP.get("micro_unsubscribe"),
+            micro_name: microName,
+        }, {wait: false});
+    }
+
+    async microPublish(microName, payloads, {trace} = {}) {
+        const socketManager = this.getSocketManager();
+        if (!socketManager) return Promise.reject('SocketManager not available');
+        return socketManager._sendWebSocketMessage({
+            action: ACTION_MAP.get("micro_publish"),
+            micro_name: microName,
+            data: { payloads },
+            trace: trace,
+        }, {wait: false});
     }
 
     async flushAllBatches() {

@@ -41,6 +41,8 @@ import PillManager from "@/global/js/pillManager.js";
 import "../css/pt.css";
 import {ACTION_MAP} from "@/global/actionMap.js";
 import {MetaEditorModal} from "src/grids/js/metaEditorModal.js";
+import {MicroGridManager} from "@/global/microGridManager.js";
+import {MICRO_GRID_GROUPS} from "@/global/microGridConfigs.js";
 
 const VENUE_MEDIUM = {
     'BBG': 'BBG',
@@ -144,6 +146,8 @@ export class PortfolioPage extends PageBase {
         this._toolPanelIdx = 0;
         this._buttonPosition = 0;
 
+        // Micro-grid manager (initialized after page ready)
+        this._microGridManager = null;
     }
 
     async onBeforeInit() {
@@ -679,6 +683,7 @@ export class PortfolioPage extends PageBase {
     async onInit() {
         this.context.settingsManager = new GridSettings(this.context);
         await this._setupWebSocketSubscriptions();
+        this._microGridManager = new MicroGridManager(this);
     }
 
     async setupDynamicTooltips() {
@@ -792,6 +797,12 @@ export class PortfolioPage extends PageBase {
 
         // Central teardown handles engine, grid, pill, widgets, subs, emitter tokens
         this._teardownGrid();
+
+        // Cleanup micro-grid manager
+        if (this._microGridManager) {
+            this._microGridManager.destroy().catch(() => {});
+            this._microGridManager = null;
+        }
 
         this.frameSkew.innerHTML = '';
         this.frameSkew.style.opacity = "0";
@@ -2639,6 +2650,30 @@ export class PortfolioPage extends PageBase {
         this.addEventListener(this.metaEdit, 'click', () => {
             if (this.metaEditor) this.metaEditor.open()
         })
+
+        // Hot Tickers / Micro-grid button
+        this._setupHotTickersButton();
+    }
+
+    _setupHotTickersButton() {
+        // Try to find an existing button, otherwise create one next to the settings button
+        let btn = document.getElementById('hot-tickers-btn');
+        if (!btn && this.settingsButton) {
+            btn = document.createElement('button');
+            btn.id = 'hot-tickers-btn';
+            btn.className = 'btn btn-xs btn-ghost';
+            btn.title = 'Hot Tickers';
+            btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>';
+            this.settingsButton.parentNode?.insertBefore(btn, this.settingsButton);
+        }
+        if (btn) {
+            this.addEventListener(btn, 'click', () => this.openHotTickers());
+        }
+    }
+
+    async openHotTickers() {
+        if (!this._microGridManager) return;
+        await this._microGridManager.openGroup(MICRO_GRID_GROUPS.pt_tools);
     }
 
     setupGridTools(){

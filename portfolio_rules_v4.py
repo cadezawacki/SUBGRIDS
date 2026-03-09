@@ -742,6 +742,10 @@ async def dv01_adjust_meta(ctx):
 def register_portfolio_rules(engine: RulesEngine):
     """Register all portfolio rules with the rules engine."""
 
+    # Micro-grid rules
+    from app.helpers.micro_grid_rules import register_micro_grid_rules
+    register_micro_grid_rules(engine)
+
     # Meta Rules
     engine.register(meta_update)               # Update pct priced to match
     engine.register(test_in_name)              # if 'test' in client name, state -> TEST

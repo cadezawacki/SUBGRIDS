@@ -260,6 +260,7 @@ class ConnectionManager:
         self.executor = get_threads()
 
         await self.install_default_rules()
+        await self._init_micro_grids()
 
         self.outboundBatcher = PayloadBatcher(
             max_batch_size=OUT_MAX_BATCH,
@@ -318,6 +319,53 @@ class ConnectionManager:
         from app.services.rules.portfolio.portfolio_rules_v4 import register_portfolio_rules
         register_portfolio_rules(self.grid_system.rules)
 
+    async def _init_micro_grids(self):
+        """Register and initialize all micro-grids at startup."""
+        try:
+            import polars as pl
+            from app.helpers.micro_grid import (
+                MicroGridConfig, MicroGridGroup,
+                register_micro_grid, register_micro_grid_group,
+                init_micro_grids,
+            )
+
+            # --- Register micro-grid configs ---
+            register_micro_grid(MicroGridConfig(
+                name="hot_tickers",
+                table_name="micro_hot_tickers",
+                primary_keys=("id",),
+                columns={
+                    "id": "",
+                    "column": "ticker",
+                    "pattern": "",
+                    "severity": "low",
+                    "color": "#FFFF00",
+                },
+                column_types={
+                    "id": pl.String,
+                    "column": pl.String,
+                    "pattern": pl.String,
+                    "severity": pl.String,
+                    "color": pl.String,
+                },
+                rules_enabled=True,
+                persist=True,
+            ))
+
+            # --- Register micro-grid groups ---
+            register_micro_grid_group(MicroGridGroup(
+                name="pt_tools",
+                display_name="Portfolio Tools",
+                grids=("hot_tickers",),
+            ))
+
+            # --- Load from DB ---
+            await init_micro_grids()
+            await log.info("[MicroGrid] All micro-grids initialized")
+
+        except Exception as e:
+            await log.error(f"[MicroGrid] Initialization failed: {e}")
+
     async def shutdown(self):
         self._outbound_running = False
 
@@ -360,6 +408,12 @@ class ConnectionManager:
         self._lazy_columns.clear()
         self._lazy_tokens.clear()
         self._cleaning_up.clear()
+
+        try:
+            from app.helpers.micro_grid import shutdown_micro_grids
+            await shutdown_micro_grids()
+        except Exception as e:
+            await log.error(f"Errored while shutting down micro-grids: {e}")
 
         try:
             await self.grid_system.shutdown()
@@ -721,6 +775,10 @@ class ConnectionManager:
                 "arrow_list_rooms": self._handle_arrow_list_rooms,
                 # Arrow IPC export
                 "arrow_export": self._handle_arrow_export,
+                # Micro-grid
+                "micro_publish": self._handle_micro_publish,
+                "micro_subscribe": self._handle_micro_subscribe,
+                "micro_unsubscribe": self._handle_micro_unsubscribe,
             }
         dispatch = self._DISPATCH.get(action)
 
@@ -923,6 +981,115 @@ class ConnectionManager:
         async for outbound_payload in self.grid_system.ingest_publish(p):
             outbounds.append(self.ctx.spawn(self.outboundBatcher.add_message(outbound_payload)))
         await asyncio.gather(*outbounds, return_exceptions=True)
+
+    # -------------------------------------------------------------------------
+    # Micro-grid handlers
+    # -------------------------------------------------------------------------
+
+    async def _handle_micro_publish(self, websocket: Optional[WebSocket], d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error("Missing micro_name")
+            )
+
+        payloads = (d.get("data") or {}).get("payloads") or {}
+        user_info = self.get_user_by_socket(websocket) if websocket else {}
+        user = getattr(user_info, "username", None) or "unknown"
+
+        try:
+            outbounds = []
+            async for outbound in self.grid_system.ingest_micro_publish(
+                micro_name, payloads, user=user, trace=trace
+            ):
+                if isinstance(outbound, MicroPublish):
+                    outbounds.append(self.ctx.spawn(
+                        self._broadcast_micro(outbound)
+                    ))
+                else:
+                    # Regular Publish from rules engine cross-grid writes
+                    outbounds.append(self.ctx.spawn(
+                        self.outboundBatcher.add_message(outbound)
+                    ))
+            await asyncio.gather(*outbounds, return_exceptions=True)
+        except KeyError as e:
+            await log.error(f"[MicroGrid] Unknown micro-grid: {micro_name}")
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Unknown micro-grid: {micro_name}")
+            )
+        except Exception as e:
+            await log.error(f"[MicroGrid] Publish error: {e}")
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Micro-grid publish failed: {e}")
+            )
+
+    async def _handle_micro_subscribe(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error("Missing micro_name")
+            )
+
+        try:
+            from app.helpers.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+        except KeyError:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Unknown micro-grid: {micro_name}")
+            )
+
+        # Register subscriber on the actor
+        actor.add_subscriber(websocket)
+
+        # Subscribe to the router topic for real-time updates
+        topic = f"MICRO.{micro_name.upper()}"
+        await self.router.subscribe(websocket, topic)
+
+        # Send initial snapshot
+        snapshot = actor.snapshot_as_rows()
+        response = {
+            "action": "micro_subscribe",
+            "micro_name": micro_name,
+            "data": {
+                "snapshot": snapshot,
+                "pk_columns": list(actor.config.primary_keys),
+                "columns": list(actor.config.columns.keys()),
+            },
+            "context": {
+                "room": topic,
+                "grid_id": actor.config.grid_id,
+            },
+            "status": {"code": 200, "success": True},
+            "trace": trace,
+        }
+        await self._send_direct_message(websocket, response)
+
+    async def _handle_micro_unsubscribe(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return
+
+        try:
+            from app.helpers.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+            actor.remove_subscriber(websocket)
+        except KeyError:
+            pass
+
+        topic = f"MICRO.{micro_name.upper()}"
+        try:
+            await self.router.unsubscribe(websocket, topic)
+        except Exception:
+            pass
+
+    async def _broadcast_micro(self, micro_pub: MicroPublish) -> int:
+        """Broadcast a MicroPublish delta to all subscribers of the micro-grid topic."""
+        topic = f"MICRO.{micro_pub.micro_name.upper()}"
+        payload_dict = micro_pub.to_dict()
+        return await self.broadcast_to_room(topic, payload_dict)
 
     async def _handle_trash(self, websocket: WebSocket, d: Dict[str, Any]):
         trace = self._extract_trace(d)
