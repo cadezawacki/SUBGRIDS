@@ -21,6 +21,7 @@ export class SubscriptionManager {
         this._replayAgain = false;
 
         this._pendingSubscriptions = new Set();
+        this._onReconnectCallbacks = [];
 
         this.messageHandlers = new Map();
         this.onHandlerError = options.onHandlerError || null;
@@ -128,6 +129,21 @@ export class SubscriptionManager {
         }
 
         this._knownRoomsOnReconnect = [];
+
+        // Fire reconnect callbacks (e.g. micro-grid resubscribe)
+        for (const cb of this._onReconnectCallbacks) {
+            try { await cb(); } catch (e) { console.error('[SubscriptionManager] reconnect callback error:', e); }
+        }
+    }
+
+    /** Register a callback to be invoked after WebSocket reconnect replay. */
+    onReconnect(callback) {
+        this._onReconnectCallbacks.push(callback);
+    }
+
+    /** Remove a reconnect callback. */
+    offReconnect(callback) {
+        this._onReconnectCallbacks = this._onReconnectCallbacks.filter(cb => cb !== callback);
     }
 
     async messageRouter(message) {

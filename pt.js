@@ -684,6 +684,15 @@ export class PortfolioPage extends PageBase {
         this.context.settingsManager = new GridSettings(this.context);
         await this._setupWebSocketSubscriptions();
         this._microGridManager = new MicroGridManager(this);
+
+        // Auto-resubscribe micro-grids on WebSocket reconnect
+        this._microReconnectCb = async () => {
+            if (this._microGridManager) {
+                this._microGridManager.showReconnectIndicator();
+                await this._microGridManager.resubscribeAll();
+            }
+        };
+        this.subscriptionManager().onReconnect(this._microReconnectCb);
     }
 
     async setupDynamicTooltips() {
@@ -799,6 +808,10 @@ export class PortfolioPage extends PageBase {
         this._teardownGrid();
 
         // Cleanup micro-grid manager
+        if (this._microReconnectCb) {
+            try { this.subscriptionManager().offReconnect(this._microReconnectCb); } catch (e) { /* ignore */ }
+            this._microReconnectCb = null;
+        }
         if (this._microGridManager) {
             this._microGridManager.destroy().catch(() => {});
             this._microGridManager = null;
