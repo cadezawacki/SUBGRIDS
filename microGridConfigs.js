@@ -20,6 +20,22 @@ export const SEVERITY_COLOR_MAP = {
 };
 
 // ============================================================================
+// Regex / glob auto-detection
+// ============================================================================
+
+const REGEX_INDICATORS = /[\\^$*+?.()|[\]{}]/;
+
+export function detectMatchMode(pattern) {
+    if (!pattern || typeof pattern !== 'string') return 'literal';
+    if (REGEX_INDICATORS.test(pattern)) return 'regex';
+    return 'literal';
+}
+
+export function isValidRegex(pattern) {
+    try { new RegExp(pattern); return true; } catch { return false; }
+}
+
+// ============================================================================
 // Custom AG Grid cell editor: native color picker
 // ============================================================================
 
@@ -54,10 +70,124 @@ export class ColorPickerEditor {
 }
 
 // ============================================================================
-// Custom AG Grid cell editor: tags pill editor
+// Tags system — hierarchical with custom colors
 // ============================================================================
 
 const ALL_KNOWN_TAGS = new Set();
+const TAG_CUSTOM_COLORS = new Map();   // tag -> {bg, fg, border}
+
+export function _parseTags(val) {
+    if (!val || typeof val !== 'string') return [];
+    return val.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+export function _parseTagCategory(tag) {
+    const idx = tag.indexOf(':');
+    if (idx > 0) return { category: tag.slice(0, idx), label: tag.slice(idx + 1) };
+    return { category: null, label: tag };
+}
+
+function _tagHue(tag) {
+    const { label } = _parseTagCategory(tag);
+    let h = 0;
+    for (let i = 0; i < label.length; i++) h = (h * 31 + label.charCodeAt(i)) & 0xFFFF;
+    return h % 360;
+}
+
+function _tagColors(tag) {
+    const custom = TAG_CUSTOM_COLORS.get(tag);
+    if (custom) return custom;
+    const hue = _tagHue(tag);
+    return {
+        bg: `hsl(${hue},55%,25%)`,
+        fg: `hsl(${hue},80%,80%)`,
+        border: `hsl(${hue},50%,35%)`,
+    };
+}
+
+export function _createPillEl(tag, showRemove = false, onRemove = null) {
+    const pill = document.createElement('span');
+    pill.className = 'micro-tag-pill';
+    const c = _tagColors(tag);
+    pill.style.cssText = `display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:500;background:${c.bg};color:${c.fg};border:1px solid ${c.border};white-space:nowrap;user-select:none;`;
+
+    const { category, label } = _parseTagCategory(tag);
+    if (category) {
+        const catSpan = document.createElement('span');
+        catSpan.style.cssText = 'opacity:0.6;font-size:10px;margin-right:1px;';
+        catSpan.textContent = category + ':';
+        pill.appendChild(catSpan);
+        pill.appendChild(document.createTextNode(label));
+    } else {
+        pill.textContent = tag;
+    }
+
+    if (showRemove && onRemove) {
+        const x = document.createElement('span');
+        x.textContent = '×';
+        x.style.cssText = 'cursor:pointer;margin-left:2px;font-size:13px;line-height:1;';
+        x.addEventListener('click', (e) => { e.stopPropagation(); onRemove(); });
+        pill.appendChild(x);
+    }
+    return pill;
+}
+
+export function getAllKnownTags() { return ALL_KNOWN_TAGS; }
+export function getTagCustomColors() { return TAG_CUSTOM_COLORS; }
+
+export function setTagColor(tag, bg, fg, border) {
+    TAG_CUSTOM_COLORS.set(tag, { bg, fg, border });
+}
+
+export function removeTagColor(tag) {
+    TAG_CUSTOM_COLORS.delete(tag);
+}
+
+export function seedKnownTags(rows) {
+    for (const row of rows) {
+        if (row.tags) {
+            for (const t of _parseTags(row.tags)) ALL_KNOWN_TAGS.add(t);
+        }
+    }
+}
+
+/**
+ * Group known tags by category. Returns Map<category|'', string[]>.
+ */
+export function getTagsByCategory() {
+    const cats = new Map();
+    for (const tag of ALL_KNOWN_TAGS) {
+        const { category } = _parseTagCategory(tag);
+        const key = category || '';
+        if (!cats.has(key)) cats.set(key, []);
+        cats.get(key).push(tag);
+    }
+    for (const arr of cats.values()) arr.sort();
+    return cats;
+}
+
+// ============================================================================
+// Tags cell renderer (pills display)
+// ============================================================================
+
+export function tagsCellRenderer(params) {
+    if (!params.value) return '';
+    const tags = _parseTags(params.value);
+    return tags.map(tag => {
+        const c = _tagColors(tag);
+        const { category, label } = _parseTagCategory(tag);
+        const catHtml = category ? `<span style="opacity:0.6;font-size:9px;">${_escHtml(category)}:</span>` : '';
+        return `<span style="display:inline-flex;align-items:center;gap:1px;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:500;background:${c.bg};color:${c.fg};border:1px solid ${c.border};margin-right:3px;">${catHtml}${_escHtml(label)}</span>`;
+    }).join('');
+}
+
+function _escHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ============================================================================
+// Custom AG Grid cell editor: tags pill editor
+// ============================================================================
 
 export class TagsCellEditor {
     init(params) {
@@ -79,11 +209,10 @@ export class TagsCellEditor {
             this._el.appendChild(pill);
         });
 
-        // Add-tag input
         const input = document.createElement('input');
         input.type = 'text';
-        input.placeholder = '+ tag';
-        input.style.cssText = 'border:none;outline:none;background:transparent;color:#ccc;font-size:11px;width:60px;';
+        input.placeholder = '+ tag (category:name)';
+        input.style.cssText = 'border:none;outline:none;background:transparent;color:#ccc;font-size:11px;width:80px;';
         input.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' || e.key === ',') {
                 e.preventDefault();
@@ -98,13 +227,13 @@ export class TagsCellEditor {
         });
         this._el.appendChild(input);
 
-        // Suggestions dropdown from known tags
+        // Suggestions grouped by category
         if (ALL_KNOWN_TAGS.size > 0) {
             const missing = [...ALL_KNOWN_TAGS].filter(t => !this._tags.includes(t));
             if (missing.length > 0) {
                 const wrap = document.createElement('div');
                 wrap.style.cssText = 'width:100%;display:flex;flex-wrap:wrap;gap:3px;margin-top:2px;opacity:0.5;';
-                missing.slice(0, 10).forEach(tag => {
+                missing.slice(0, 12).forEach(tag => {
                     const sug = _createPillEl(tag, false);
                     sug.style.cursor = 'pointer';
                     sug.style.opacity = '0.6';
@@ -120,7 +249,6 @@ export class TagsCellEditor {
             }
         }
 
-        // Refocus the input after re-render
         requestAnimationFrame(() => {
             const inp = this._el.querySelector('input');
             if (inp) inp.focus();
@@ -138,67 +266,7 @@ export class TagsCellEditor {
 }
 
 // ============================================================================
-// Tags helper functions (exported for use by microGridManager)
-// ============================================================================
-
-export function _parseTags(val) {
-    if (!val || typeof val !== 'string') return [];
-    return val.split(',').map(s => s.trim()).filter(Boolean);
-}
-
-export function _createPillEl(tag, showRemove = false, onRemove = null) {
-    const pill = document.createElement('span');
-    pill.className = 'micro-tag-pill';
-    const hue = _tagHue(tag);
-    pill.style.cssText = `display:inline-flex;align-items:center;gap:3px;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:500;background:hsl(${hue},55%,25%);color:hsl(${hue},80%,80%);border:1px solid hsl(${hue},50%,35%);white-space:nowrap;user-select:none;`;
-    pill.textContent = tag;
-    if (showRemove && onRemove) {
-        const x = document.createElement('span');
-        x.textContent = '×';
-        x.style.cssText = 'cursor:pointer;margin-left:2px;font-size:13px;line-height:1;';
-        x.addEventListener('click', (e) => { e.stopPropagation(); onRemove(); });
-        pill.appendChild(x);
-    }
-    return pill;
-}
-
-function _tagHue(tag) {
-    let h = 0;
-    for (let i = 0; i < tag.length; i++) h = (h * 31 + tag.charCodeAt(i)) & 0xFFFF;
-    return h % 360;
-}
-
-export function getAllKnownTags() { return ALL_KNOWN_TAGS; }
-
-export function seedKnownTags(rows) {
-    for (const row of rows) {
-        if (row.tags) {
-            for (const t of _parseTags(row.tags)) {
-                ALL_KNOWN_TAGS.add(t);
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Tags cell renderer (pills display)
-// ============================================================================
-
-export function tagsCellRenderer(params) {
-    if (!params.value) return '';
-    const tags = _parseTags(params.value);
-    return tags.map(tag => {
-        const hue = _tagHue(tag);
-        return `<span style="display:inline-flex;align-items:center;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:500;background:hsl(${hue},55%,25%);color:hsl(${hue},80%,80%);border:1px solid hsl(${hue},50%,35%);margin-right:3px;">${_escHtml(tag)}</span>`;
-    }).join('');
-}
-
-function _escHtml(s) {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// ============================================================================
-// Tags filter (custom AG Grid filter)
+// Tags filter — hierarchical grouping by category
 // ============================================================================
 
 export class TagsFilter {
@@ -206,15 +274,15 @@ export class TagsFilter {
         this._params = params;
         this._filterTags = new Set();
         this._el = document.createElement('div');
-        this._el.style.cssText = 'padding:8px;min-width:180px;max-height:250px;overflow-y:auto;';
+        this._el.style.cssText = 'padding:8px;min-width:200px;max-height:280px;overflow-y:auto;';
         this._render();
     }
 
     _render() {
         this._el.innerHTML = '';
-        const tags = [...ALL_KNOWN_TAGS].sort();
+        const cats = getTagsByCategory();
 
-        if (tags.length === 0) {
+        if (cats.size === 0) {
             this._el.textContent = 'No tags yet';
             return;
         }
@@ -230,22 +298,37 @@ export class TagsFilter {
         });
         this._el.appendChild(clearBtn);
 
-        tags.forEach(tag => {
-            const row = document.createElement('label');
-            row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;font-size:12px;color:#ccc;';
-            const cb = document.createElement('input');
-            cb.type = 'checkbox';
-            cb.checked = this._filterTags.has(tag);
-            cb.addEventListener('change', () => {
-                if (cb.checked) this._filterTags.add(tag);
-                else this._filterTags.delete(tag);
-                this._params.filterChangedCallback();
-            });
-            row.appendChild(cb);
-            const pill = _createPillEl(tag, false);
-            row.appendChild(pill);
-            this._el.appendChild(row);
+        // Render each category
+        const sortedCats = [...cats.keys()].sort((a, b) => {
+            if (a === '') return 1;
+            if (b === '') return -1;
+            return a.localeCompare(b);
         });
+
+        for (const cat of sortedCats) {
+            const tags = cats.get(cat);
+            if (cat) {
+                const catHeader = document.createElement('div');
+                catHeader.style.cssText = 'font-size:10px;font-weight:600;color:#888;text-transform:uppercase;margin:6px 0 2px;letter-spacing:0.5px;';
+                catHeader.textContent = cat;
+                this._el.appendChild(catHeader);
+            }
+            for (const tag of tags) {
+                const row = document.createElement('label');
+                row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer;font-size:12px;color:#ccc;';
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.checked = this._filterTags.has(tag);
+                cb.addEventListener('change', () => {
+                    if (cb.checked) this._filterTags.add(tag);
+                    else this._filterTags.delete(tag);
+                    this._params.filterChangedCallback();
+                });
+                row.appendChild(cb);
+                row.appendChild(_createPillEl(tag, false));
+                this._el.appendChild(row);
+            }
+        }
     }
 
     getGui() { return this._el; }
@@ -265,6 +348,23 @@ export class TagsFilter {
     }
     afterGuiAttached() { this._render(); }
     destroy() {}
+}
+
+// ============================================================================
+// Pattern cell renderer — teal highlight for regex patterns
+// ============================================================================
+
+function patternCellRenderer(params) {
+    const val = params.value;
+    if (!val) return '';
+    const mode = detectMatchMode(val);
+    if (mode === 'regex') {
+        const valid = isValidRegex(val);
+        const color = valid ? '#2dd4bf' : '#f87171';  // teal or red for invalid
+        const title = valid ? 'Regex pattern' : 'Invalid regex';
+        return `<span style="color:${color};font-family:monospace;font-size:12px;" title="${title}">${_escHtml(val)}</span>`;
+    }
+    return _escHtml(val);
 }
 
 // ============================================================================
@@ -315,6 +415,15 @@ export const MICRO_GRID_CONFIGS = {
                 flex: 1,
                 minWidth: 120,
                 cellEditor: 'agTextCellEditor',
+                cellRenderer: patternCellRenderer,
+            },
+            {
+                field: 'match_mode',
+                headerName: 'Match Mode',
+                editable: false,
+                width: 100,
+                hide: true,
+                suppressColumnsToolPanel: false,
             },
             {
                 field: 'severity',
@@ -377,6 +486,7 @@ export const MICRO_GRID_CONFIGS = {
             id: crypto.randomUUID(),
             column: 'ticker',
             pattern: '',
+            match_mode: 'literal',
             severity: 'low',
             color: SEVERITY_COLOR_MAP['low'],
             tags: '',

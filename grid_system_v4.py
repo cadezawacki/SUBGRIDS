@@ -2460,6 +2460,16 @@ class RuleContext:
                 )
         return ReadDeps(col_deps=tuple(col_deps), row_deps=tuple(row_deps))
 
+    def get_micro_grid_data(self, micro_name: str) -> Optional[pl.DataFrame]:
+        """Access micro-grid snapshot from any rule (main grid or micro-grid).
+        Returns a cloned DataFrame or None if the micro-grid doesn't exist."""
+        try:
+            from app.helpers.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+            return actor.snapshot()
+        except (KeyError, Exception):
+            return None
+
     async def snapshot_running(self, context: Optional[RoomContext] = None) -> int:
         a = self.system.registry.require((context or self.source_context))
         await a.ensure_awake()
