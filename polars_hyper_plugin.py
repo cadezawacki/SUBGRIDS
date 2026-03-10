@@ -28,9 +28,24 @@ except ImportError:  # pragma: no cover
     pa = None  # type: ignore
 
 try:
-    from scipy import stats as scipy_stats  # type: ignore
+    from pyod.models.mad import MAD as PyodMAD  # type: ignore
+    from pyod.models.knn import KNN as PyodKNN  # type: ignore
+    from pyod.models.lof import LOF as PyodLOF  # type: ignore
+    from pyod.models.iforest import IForest as PyodIForest  # type: ignore
+    from pyod.models.ecod import ECOD as PyodECOD  # type: ignore
+    from pyod.models.copod import COPOD as PyodCOPOD  # type: ignore
+    from pyod.models.hbos import HBOS as PyodHBOS  # type: ignore
+    from pyod.models.ocsvm import OCSVM as PyodOCSVM  # type: ignore
+    from pyod.models.abod import ABOD as PyodABOD  # type: ignore
+    from pyod.models.pca import PCA as PyodPCA  # type: ignore
+    from pyod.models.loda import LODA as PyodLODA  # type: ignore
+    from pyod.models.suod import SUOD as PyodSUOD  # type: ignore
+    _HAS_PYOD = True
 except ImportError:  # pragma: no cover
-    scipy_stats = None  # type: ignore
+    _HAS_PYOD = False
+    PyodMAD = PyodKNN = PyodLOF = PyodIForest = None  # type: ignore
+    PyodECOD = PyodCOPOD = PyodHBOS = PyodOCSVM = None  # type: ignore
+    PyodABOD = PyodPCA = PyodLODA = PyodSUOD = None  # type: ignore
 
 
 # -----------------------------------------------------------------------------
@@ -1520,6 +1535,54 @@ class OutlierMethod(Enum):
     MAD = "mad"
     PERCENTILE = "percentile"
     GRUBBS = "grubbs"
+    KNN = "knn"
+    LOF = "lof"
+    IFOREST = "iforest"
+    ECOD = "ecod"
+    COPOD = "copod"
+    HBOS = "hbos"
+    OCSVM = "ocsvm"
+    ABOD = "abod"
+    PCA = "pca"
+    LODA = "loda"
+    SUOD = "suod"
+
+
+_PYOD_METHOD_SET = frozenset({
+    OutlierMethod.KNN, OutlierMethod.LOF, OutlierMethod.IFOREST,
+    OutlierMethod.ECOD, OutlierMethod.COPOD, OutlierMethod.HBOS,
+    OutlierMethod.OCSVM, OutlierMethod.ABOD, OutlierMethod.PCA,
+    OutlierMethod.LODA, OutlierMethod.SUOD,
+})
+
+_PYOD_CLASS_MAP: Dict[OutlierMethod, Any] = {}
+if _HAS_PYOD:
+    _PYOD_CLASS_MAP = {
+        OutlierMethod.KNN: PyodKNN,
+        OutlierMethod.LOF: PyodLOF,
+        OutlierMethod.IFOREST: PyodIForest,
+        OutlierMethod.ECOD: PyodECOD,
+        OutlierMethod.COPOD: PyodCOPOD,
+        OutlierMethod.HBOS: PyodHBOS,
+        OutlierMethod.OCSVM: PyodOCSVM,
+        OutlierMethod.ABOD: PyodABOD,
+        OutlierMethod.PCA: PyodPCA,
+        OutlierMethod.LODA: PyodLODA,
+    }
+
+_PYOD_MIN_SAMPLES: Dict[OutlierMethod, int] = {
+    OutlierMethod.KNN: 6,
+    OutlierMethod.LOF: 6,
+    OutlierMethod.IFOREST: 8,
+    OutlierMethod.ECOD: 5,
+    OutlierMethod.COPOD: 5,
+    OutlierMethod.HBOS: 5,
+    OutlierMethod.OCSVM: 5,
+    OutlierMethod.ABOD: 6,
+    OutlierMethod.PCA: 5,
+    OutlierMethod.LODA: 5,
+    OutlierMethod.SUOD: 8,
+}
 
 
 _OUTLIER_DEFAULT_METHOD = OutlierMethod.MAD
@@ -1531,6 +1594,108 @@ _OUTLIER_DEFAULT_ZEROS_AS_NULL = False
 _OUTLIER_DEFAULT_FILTER_NULLS = True
 _OUTLIER_DEFAULT_AUTO_RESCALE = False
 _OUTLIER_DEFAULT_WEIGHT_COL: Optional[str] = None
+_OUTLIER_DEFAULT_CONTAMINATION: Optional[float] = None
+
+
+def _sensitivity_to_contamination(sensitivity: float) -> float:
+    raw = 0.5 * np.exp(-0.5 * sensitivity)
+    return float(np.clip(raw, 0.01, 0.49))
+
+
+def _resolve_contamination(
+    contamination: Optional[float],
+    sensitivity: float,
+) -> float:
+    if contamination is not None:
+        return float(np.clip(contamination, 0.01, 0.49))
+    return _sensitivity_to_contamination(sensitivity)
+
+
+def _build_pyod_detector(
+    method: OutlierMethod,
+    contamination: float,
+    *,
+    pyod_params: Optional[Dict[str, Any]] = None,
+):
+    if not _HAS_PYOD:
+        raise ImportError(
+            f"pyod is required for OutlierMethod.{method.name}. "
+            "Install with: pip install pyod"
+        )
+    params = dict(pyod_params) if pyod_params else {}
+    params.setdefault("contamination", contamination)
+
+    if method == OutlierMethod.SUOD:
+        base_estimators = [
+            _PYOD_CLASS_MAP[OutlierMethod.LOF](contamination=contamination),
+            _PYOD_CLASS_MAP[OutlierMethod.COPOD](contamination=contamination),
+            _PYOD_CLASS_MAP[OutlierMethod.IFOREST](contamination=contamination),
+        ]
+        return PyodSUOD(base_estimators=base_estimators, contamination=contamination)
+
+    if method == OutlierMethod.MAD:
+        threshold = params.pop("threshold", params.pop("sensitivity", 3.5))
+        cont = params.pop("contamination", contamination)
+        return PyodMAD(threshold=threshold, contamination=cont)
+
+    cls = _PYOD_CLASS_MAP.get(method)
+    if cls is None:
+        raise ValueError(f"No pyod class mapped for {method!r}")
+    return cls(**params)
+
+
+def _pyod_detect_1d(
+    arr: np.ndarray,
+    *,
+    method: OutlierMethod,
+    contamination: float,
+    pyod_params: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
+    nan_mask = np.isnan(arr)
+    valid = arr[~nan_mask]
+    min_n = _PYOD_MIN_SAMPLES.get(method, 5)
+    if valid.size < min_n:
+        return np.zeros(arr.shape, dtype=np.bool_)
+    X = valid.reshape(-1, 1)
+    clf = _build_pyod_detector(method, contamination, pyod_params=pyod_params)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        clf.fit(X)
+    result = np.zeros(arr.shape, dtype=np.bool_)
+    result[~nan_mask] = clf.labels_.astype(bool)
+    return result
+
+
+def _pyod_detect_2d_rowwise(
+    data: np.ndarray,
+    *,
+    method: OutlierMethod,
+    contamination: float,
+    pyod_params: Optional[Dict[str, Any]] = None,
+) -> np.ndarray:
+    n_rows, n_cols = data.shape
+    nan_mask = np.isnan(data)
+    valid_count = np.sum(~nan_mask, axis=1)
+    outlier_mask = np.zeros_like(data, dtype=np.bool_)
+    min_n = _PYOD_MIN_SAMPLES.get(method, 5)
+
+    for i in range(n_rows):
+        row = data[i]
+        row_nan = nan_mask[i]
+        n_valid = valid_count[i]
+        if n_valid < min_n:
+            continue
+        valid_vals = row[~row_nan].reshape(-1, 1)
+        clf = _build_pyod_detector(method, contamination, pyod_params=pyod_params)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            clf.fit(valid_vals)
+        row_labels = clf.labels_.astype(bool)
+        row_mask = np.zeros(n_cols, dtype=np.bool_)
+        row_mask[~row_nan] = row_labels
+        outlier_mask[i] = row_mask
+
+    return outlier_mask
 
 
 def _winsor_preprocess_columns(
@@ -1559,7 +1724,13 @@ def _detect_outliers_1d(
     sensitivity: float,
     percentile_bounds: tuple,
     symmetric: bool,
+    contamination: Optional[float] = None,
+    pyod_params: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
+    if method in _PYOD_METHOD_SET:
+        c = _resolve_contamination(contamination, sensitivity)
+        return _pyod_detect_1d(arr, method=method, contamination=c, pyod_params=pyod_params)
+
     mask = np.isnan(arr)
     valid = arr[~mask]
     n = valid.size
@@ -1582,6 +1753,11 @@ def _detect_outliers_1d(
         return (~mask) & (z > sensitivity)
 
     if method == OutlierMethod.MAD:
+        if _HAS_PYOD:
+            c = _resolve_contamination(contamination, sensitivity)
+            params = dict(pyod_params) if pyod_params else {}
+            params.setdefault("threshold", sensitivity)
+            return _pyod_detect_1d(arr, method=OutlierMethod.MAD, contamination=c, pyod_params=params)
         med = np.nanmedian(valid)
         abs_dev = np.abs(valid - med)
         mad = np.nanmedian(abs_dev)
@@ -1599,14 +1775,12 @@ def _detect_outliers_1d(
         return (~mask) & ((arr < lower) | (arr > upper))
 
     if method == OutlierMethod.GRUBBS:
-        if scipy_stats is None:
-            return _detect_outliers_1d(
-                arr, method=OutlierMethod.MAD, sensitivity=sensitivity,
-                percentile_bounds=percentile_bounds, symmetric=symmetric,
-            )
+        if _HAS_PYOD:
+            c = _resolve_contamination(contamination, sensitivity)
+            return _pyod_detect_1d(arr, method=OutlierMethod.ECOD, contamination=c, pyod_params=pyod_params)
         if n < 6:
             return _detect_outliers_1d(
-                arr, method=OutlierMethod.MAD, sensitivity=sensitivity,
+                arr, method=OutlierMethod.IQR, sensitivity=sensitivity,
                 percentile_bounds=percentile_bounds, symmetric=symmetric,
             )
         mu = np.nanmean(valid)
@@ -1614,8 +1788,9 @@ def _detect_outliers_1d(
         if sigma < 1e-15:
             return np.zeros(arr.shape, dtype=np.bool_)
         g_scores = np.abs(arr - mu) / sigma
-        t_crit_sq = scipy_stats.t.ppf(1 - (0.05 / (2 * n)), n - 2) ** 2
-        g_crit = ((n - 1) / np.sqrt(n)) * np.sqrt(t_crit_sq / ((n - 2) + t_crit_sq))
+        alpha = 0.05
+        t_approx = sensitivity
+        g_crit = ((n - 1) / np.sqrt(n)) * np.sqrt((t_approx ** 2) / ((n - 2) + (t_approx ** 2)))
         return (~mask) & (g_scores > g_crit)
 
     return np.zeros(arr.shape, dtype=np.bool_)
@@ -1628,7 +1803,13 @@ def _detect_outliers_2d_rowwise(
     sensitivity: float,
     percentile_bounds: tuple,
     symmetric: bool,
+    contamination: Optional[float] = None,
+    pyod_params: Optional[Dict[str, Any]] = None,
 ) -> np.ndarray:
+    if method in _PYOD_METHOD_SET:
+        c = _resolve_contamination(contamination, sensitivity)
+        return _pyod_detect_2d_rowwise(data, method=method, contamination=c, pyod_params=pyod_params)
+
     n_rows, n_cols = data.shape
     nan_mask = np.isnan(data)
     valid_count = np.sum(~nan_mask, axis=1)
@@ -1639,6 +1820,11 @@ def _detect_outliers_2d_rowwise(
         return outlier_mask
 
     if method == OutlierMethod.MAD:
+        if _HAS_PYOD:
+            c = _resolve_contamination(contamination, sensitivity)
+            params = dict(pyod_params) if pyod_params else {}
+            params.setdefault("threshold", sensitivity)
+            return _pyod_detect_2d_rowwise(data, method=OutlierMethod.MAD, contamination=c, pyod_params=params)
         med = np.nanmedian(data, axis=1, keepdims=True)
         abs_dev_all = np.where(nan_mask, np.nan, np.abs(data - med))
         mad = np.nanmedian(abs_dev_all, axis=1, keepdims=True)
@@ -1681,18 +1867,21 @@ def _detect_outliers_2d_rowwise(
         outlier_mask = (~nan_mask) & ((data < lower) | (data > upper)) & enough_data[:, np.newaxis]
 
     elif method == OutlierMethod.GRUBBS:
+        if _HAS_PYOD:
+            c = _resolve_contamination(contamination, sensitivity)
+            return _pyod_detect_2d_rowwise(data, method=OutlierMethod.ECOD, contamination=c, pyod_params=pyod_params)
         need_fallback = enough_data & (valid_count < 6)
         can_grubbs = enough_data & (valid_count >= 6)
 
         if np.any(need_fallback):
             fallback = _detect_outliers_2d_rowwise(
                 data[need_fallback],
-                method=OutlierMethod.MAD, sensitivity=sensitivity,
+                method=OutlierMethod.IQR, sensitivity=sensitivity,
                 percentile_bounds=percentile_bounds, symmetric=symmetric,
             )
             outlier_mask[need_fallback] = fallback
 
-        if np.any(can_grubbs) and scipy_stats is not None:
+        if np.any(can_grubbs):
             sub = data[can_grubbs]
             sub_nan = np.isnan(sub)
             mu = np.nanmean(sub, axis=1, keepdims=True)
@@ -1700,13 +1889,13 @@ def _detect_outliers_2d_rowwise(
             safe_sigma = np.where(sigma < 1e-15, 1.0, sigma)
             g_scores = np.abs(sub - mu) / safe_sigma
             ns = np.sum(~sub_nan, axis=1)
+            t_approx = sensitivity
             g_crits = np.empty(ns.shape)
             for idx, ni in enumerate(ns):
                 if ni < 3 or sigma.ravel()[idx] < 1e-15:
                     g_crits[idx] = np.inf
                 else:
-                    t_sq = scipy_stats.t.ppf(1 - (0.05 / (2 * ni)), ni - 2) ** 2
-                    g_crits[idx] = ((ni - 1) / np.sqrt(ni)) * np.sqrt(t_sq / ((ni - 2) + t_sq))
+                    g_crits[idx] = ((ni - 1) / np.sqrt(ni)) * np.sqrt((t_approx ** 2) / ((ni - 2) + (t_approx ** 2)))
             is_outlier = g_scores > g_crits[:, np.newaxis]
             zero_sig = (sigma < 1e-15).ravel()
             if np.any(zero_sig):
@@ -1814,12 +2003,15 @@ def _winsorize_column_1d(
     percentile_bounds: tuple,
     symmetric: bool,
     auto_rescale: bool,
+    contamination: Optional[float] = None,
+    pyod_params: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     if auto_rescale:
         arr = _auto_rescale_array(arr)
     outlier_mask = _detect_outliers_1d(
         arr, method=method, sensitivity=sensitivity,
         percentile_bounds=percentile_bounds, symmetric=symmetric,
+        contamination=contamination, pyod_params=pyod_params,
     )
     valid_mask = (~np.isnan(arr)) & (~outlier_mask)
     valid_vals = arr[valid_mask]
@@ -1851,6 +2043,8 @@ def horizontal_winsor(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_alias: str = "h_winsor_mean",
     n_threads: int = 2,
 ):
@@ -1876,6 +2070,7 @@ def horizontal_winsor(
     outlier_mask = _detect_outliers_2d_rowwise(
         data, method=method, sensitivity=sensitivity,
         percentile_bounds=percentile_bounds, symmetric=symmetric,
+        contamination=contamination, pyod_params=pyod_params,
     )
     clamped = _winsorize_clamp_2d(data, outlier_mask)
     results = _weighted_nanmean_rows(clamped, weight_data)
@@ -1896,6 +2091,8 @@ def vertical_winsor(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_suffix: str = "_v_winsor",
     n_threads: int = 2,
 ):
@@ -1914,6 +2111,7 @@ def vertical_winsor(
             arr, method=method, sensitivity=sensitivity,
             percentile_bounds=percentile_bounds, symmetric=symmetric,
             auto_rescale=auto_rescale,
+            contamination=contamination, pyod_params=pyod_params,
         )
         return col_name, mean_val
 
@@ -1950,6 +2148,8 @@ def vertical_winsor_w_neighbors(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_suffix: str = "_vn_winsor",
     n_threads: int = 2,
 ):
@@ -1980,6 +2180,7 @@ def vertical_winsor_w_neighbors(
         outlier_in_combined = _detect_outliers_1d(
             flat, method=method, sensitivity=sensitivity,
             percentile_bounds=percentile_bounds, symmetric=symmetric,
+            contamination=contamination, pyod_params=pyod_params,
         )
         n_rows = target_arr.shape[0]
         if combined.ndim == 1:
@@ -2039,6 +2240,8 @@ def horizontal_winsor_w_neighbors(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_alias: str = "h_winsor_neighbor_mean",
     n_threads: int = 2,
 ):
@@ -2072,6 +2275,7 @@ def horizontal_winsor_w_neighbors(
     outlier_mask_combined = _detect_outliers_2d_rowwise(
         combined_data, method=method, sensitivity=sensitivity,
         percentile_bounds=percentile_bounds, symmetric=symmetric,
+        contamination=contamination, pyod_params=pyod_params,
     )
     target_outlier = outlier_mask_combined[:, :len(target_columns)]
 
@@ -2108,6 +2312,8 @@ def horizontal_outlier_mask(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_suffix: str = "_h_outlier",
     n_threads: int = 2,
 ):
@@ -2127,6 +2333,7 @@ def horizontal_outlier_mask(
     outlier_matrix = _detect_outliers_2d_rowwise(
         data, method=method, sensitivity=sensitivity,
         percentile_bounds=percentile_bounds, symmetric=symmetric,
+        contamination=contamination, pyod_params=pyod_params,
     ).astype(np.int8)
 
     mask_series = [
@@ -2151,6 +2358,8 @@ def vertical_outlier_mask(
     nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
     zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
     filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+    contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+    pyod_params: Optional[Dict[str, Any]] = None,
     result_suffix: str = "_v_outlier",
     n_threads: int = 2,
 ):
@@ -2170,6 +2379,7 @@ def vertical_outlier_mask(
         omask = _detect_outliers_1d(
             arr, method=method, sensitivity=sensitivity,
             percentile_bounds=percentile_bounds, symmetric=symmetric,
+            contamination=contamination, pyod_params=pyod_params,
         )
         return col_name, omask.astype(np.int8)
 
@@ -3147,6 +3357,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_alias: str = "h_winsor_mean",
         n_threads: int = 2,
     ):
@@ -3155,7 +3367,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale, weight_col=weight_col,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_alias=result_alias, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_alias=result_alias, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3171,6 +3384,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_suffix: str = "_v_winsor",
         n_threads: int = 2,
     ):
@@ -3179,7 +3394,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_suffix=result_suffix, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_suffix=result_suffix, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3196,6 +3412,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_suffix: str = "_vn_winsor",
         n_threads: int = 2,
     ):
@@ -3204,7 +3422,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_suffix=result_suffix, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_suffix=result_suffix, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3222,6 +3441,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_alias: str = "h_winsor_neighbor_mean",
         n_threads: int = 2,
     ):
@@ -3230,7 +3451,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale, weight_col=weight_col,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_alias=result_alias, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_alias=result_alias, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3246,6 +3468,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_suffix: str = "_h_outlier",
         n_threads: int = 2,
     ):
@@ -3254,7 +3478,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_suffix=result_suffix, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_suffix=result_suffix, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3270,6 +3495,8 @@ class _HyperCore:
         nulls_as_zero: bool = _OUTLIER_DEFAULT_NULLS_AS_ZERO,
         zeros_as_null: bool = _OUTLIER_DEFAULT_ZEROS_AS_NULL,
         filter_nulls: bool = _OUTLIER_DEFAULT_FILTER_NULLS,
+        contamination: Optional[float] = _OUTLIER_DEFAULT_CONTAMINATION,
+        pyod_params: Optional[Dict[str, Any]] = None,
         result_suffix: str = "_v_outlier",
         n_threads: int = 2,
     ):
@@ -3278,7 +3505,8 @@ class _HyperCore:
             method=method, sensitivity=sensitivity, percentile_bounds=percentile_bounds,
             symmetric=symmetric, auto_rescale=auto_rescale,
             nulls_as_zero=nulls_as_zero, zeros_as_null=zeros_as_null,
-            filter_nulls=filter_nulls, result_suffix=result_suffix, n_threads=n_threads,
+            filter_nulls=filter_nulls, contamination=contamination, pyod_params=pyod_params,
+            result_suffix=result_suffix, n_threads=n_threads,
         )
         return self._out_frame(out)
 
@@ -3325,6 +3553,13 @@ pl.hyper = SimpleNamespace(
     pivot_ticker_fields=pivot_ticker_fields,
     null_report=null_report,
     distinct_report=distinct_report,
+    horizontal_winsor=horizontal_winsor,
+    vertical_winsor=vertical_winsor,
+    vertical_winsor_w_neighbors=vertical_winsor_w_neighbors,
+    horizontal_winsor_w_neighbors=horizontal_winsor_w_neighbors,
+    horizontal_outlier_mask=horizontal_outlier_mask,
+    vertical_outlier_mask=vertical_outlier_mask,
+    OutlierMethod=OutlierMethod,
 )  # type: ignore[attr-defined]
 
 
