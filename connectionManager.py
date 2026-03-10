@@ -340,6 +340,10 @@ class ConnectionManager:
                     "pattern": "",
                     "severity": "low",
                     "color": "#FFFF00",
+                    "tags": "",
+                    "notes": "",
+                    "updated_at": "",
+                    "updated_by": "",
                 },
                 column_types={
                     "id": pl.String,
@@ -347,6 +351,10 @@ class ConnectionManager:
                     "pattern": pl.String,
                     "severity": pl.String,
                     "color": pl.String,
+                    "tags": pl.String,
+                    "notes": pl.String,
+                    "updated_at": pl.String,
+                    "updated_by": pl.String,
                 },
                 rules_enabled=True,
                 persist=True,
@@ -997,6 +1005,16 @@ class ConnectionManager:
         payloads = (d.get("data") or {}).get("payloads") or {}
         user_info = self.get_user_by_socket(websocket) if websocket else {}
         user = getattr(user_info, "username", None) or "unknown"
+
+        # Auto-stamp updated_at / updated_by on add/update payloads
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        for key in ("add", "update"):
+            rows = payloads.get(key)
+            if rows:
+                for row in rows:
+                    row["updated_at"] = now_str
+                    row["updated_by"] = user
 
         try:
             outbounds = []

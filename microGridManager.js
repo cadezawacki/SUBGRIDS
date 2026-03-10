@@ -7,10 +7,14 @@
  *   - Tabbed modal lifecycle (open, tab switch, close)
  *   - AG Grid instance creation and data management per micro-grid
  *   - Real-time delta application from other users
+ *   - Bulk add (paste tickers/ISINs), bulk tag add/remove
  *   - Cleanup of all resources on close/destroy
  */
 
-import { MICRO_GRID_CONFIGS, MICRO_GRID_GROUPS, SEVERITY_COLOR_MAP } from './microGridConfigs.js';
+import {
+    MICRO_GRID_CONFIGS, MICRO_GRID_GROUPS, SEVERITY_COLOR_MAP,
+    _parseTags, seedKnownTags, getAllKnownTags, _createPillEl,
+} from './microGridConfigs.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -19,6 +23,41 @@ import { MICRO_GRID_CONFIGS, MICRO_GRID_GROUPS, SEVERITY_COLOR_MAP } from './mic
 function _upper(s) { return (s || '').toUpperCase(); }
 
 function _topic(microName) { return `MICRO.${_upper(microName)}`; }
+
+// Pattern matchers for bulk add
+const ISIN_RE = /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/;            // 12 chars, starts with 2-letter country
+const TICKER_RE = /^[A-Z]{1,5}(?:\.[A-Z]{1,2})?$/;        // 1-5 uppercase letters, optional .XX suffix
+
+function _extractIdentifiers(text) {
+    // Split on common delimiters: newlines, commas, semicolons, tabs, pipes, spaces
+    const tokens = text.split(/[\n\r,;\t|]+/).map(s => s.trim()).filter(Boolean);
+    const results = [];
+    const seen = new Set();
+
+    for (const raw of tokens) {
+        // Further split on spaces for multi-word lines
+        const words = raw.split(/\s+/);
+        for (const w of words) {
+            const cleaned = w.replace(/[^A-Za-z0-9.]/g, '');
+            if (!cleaned) continue;
+            const upper = cleaned.toUpperCase();
+            if (seen.has(upper)) continue;
+
+            // 12 chars → ISIN
+            if (upper.length === 12 && ISIN_RE.test(upper)) {
+                seen.add(upper);
+                results.push({ column: 'isin', pattern: upper });
+            }
+            // All caps, 1-5 letters → ticker
+            else if (TICKER_RE.test(upper) && upper.length >= 1) {
+                seen.add(upper);
+                results.push({ column: 'ticker', pattern: upper });
+            }
+            // else: ignore noise
+        }
+    }
+    return results;
+}
 
 // ---------------------------------------------------------------------------
 // MicroGridManager
@@ -56,17 +95,12 @@ export class MicroGridManager {
     // Subscription
     // =========================================================================
 
-    /**
-     * Subscribe to a micro-grid's real-time updates.
-     * Registers message handlers and sends the subscribe message.
-     */
     async subscribe(microName) {
         if (this._subscribed.has(microName)) return;
 
         const sm = this._page.subscriptionManager();
         const topic = _topic(microName);
 
-        // Register handlers before subscribing so we catch the initial snapshot
         const handlers = {
             subscribe: this._onSnapshot.bind(this, microName),
             publish: this._onDelta.bind(this, microName),
@@ -80,9 +114,6 @@ export class MicroGridManager {
         await sm.microSubscribe(microName);
     }
 
-    /**
-     * Unsubscribe from a micro-grid.
-     */
     async unsubscribe(microName) {
         if (!this._subscribed.has(microName)) return;
 
@@ -109,6 +140,7 @@ export class MicroGridManager {
         if (!Array.isArray(snapshot)) return;
 
         this._data.set(microName, [...snapshot]);
+        seedKnownTags(snapshot);
         this._refreshGrid(microName);
     }
 
@@ -122,20 +154,18 @@ export class MicroGridManager {
         const pkCol = config.primaryKeys[0];
         let rows = this._data.get(microName) || [];
 
-        // Apply removes
         const removeRows = payloads.remove || [];
         if (removeRows.length > 0) {
             const removeIds = new Set(removeRows.map(r => String(r[pkCol])));
             rows = rows.filter(r => !removeIds.has(String(r[pkCol])));
         }
 
-        // Apply adds
         const addRows = payloads.add || [];
         if (addRows.length > 0) {
             rows = [...rows, ...addRows];
+            seedKnownTags(addRows);
         }
 
-        // Apply updates
         const updateRows = payloads.update || [];
         if (updateRows.length > 0) {
             const updateMap = new Map(updateRows.map(r => [String(r[pkCol]), r]));
@@ -143,6 +173,7 @@ export class MicroGridManager {
                 const upd = updateMap.get(String(r[pkCol]));
                 return upd ? { ...r, ...upd } : r;
             });
+            seedKnownTags(updateRows);
         }
 
         this._data.set(microName, rows);
@@ -169,6 +200,15 @@ export class MicroGridManager {
         await sm.microPublish(microName, { add: [filled] });
     }
 
+    async publishBulkAdd(microName, rows) {
+        const config = MICRO_GRID_CONFIGS[microName];
+        if (!config) return;
+        const filled = rows.map(r => config.addRowDefaults ? config.addRowDefaults(r) : r);
+        if (filled.length === 0) return;
+        const sm = this._page.subscriptionManager();
+        await sm.microPublish(microName, { add: filled });
+    }
+
     async publishUpdate(microName, row) {
         const sm = this._page.subscriptionManager();
         await sm.microPublish(microName, { update: [row] });
@@ -182,14 +222,24 @@ export class MicroGridManager {
         await sm.microPublish(microName, { remove: [{ [pkCol]: row[pkCol] }] });
     }
 
+    async publishBulkRemove(microName, rowArr) {
+        const config = MICRO_GRID_CONFIGS[microName];
+        if (!config) return;
+        const pkCol = config.primaryKeys[0];
+        const sm = this._page.subscriptionManager();
+        await sm.microPublish(microName, { remove: rowArr.map(r => ({ [pkCol]: r[pkCol] })) });
+    }
+
+    async publishBulkUpdate(microName, rowArr) {
+        if (rowArr.length === 0) return;
+        const sm = this._page.subscriptionManager();
+        await sm.microPublish(microName, { update: rowArr });
+    }
+
     // =========================================================================
     // Modal / Tab UI
     // =========================================================================
 
-    /**
-     * Open a tabbed modal for a micro-grid group.
-     * Returns a Promise that resolves when the modal is closed.
-     */
     async openGroup(groupNameOrConfig) {
         const groupConfig = typeof groupNameOrConfig === 'string'
             ? MICRO_GRID_GROUPS[groupNameOrConfig]
@@ -202,13 +252,11 @@ export class MicroGridManager {
 
         const groupName = groupConfig.name;
 
-        // If already open, bring to front
         const existing = this._openModals.get(groupName);
         if (existing && existing.open) {
             return;
         }
 
-        // Subscribe to all grids in the group
         for (const gridName of groupConfig.grids) {
             await this.subscribe(gridName);
         }
@@ -243,9 +291,9 @@ export class MicroGridManager {
             style.id = 'micro-grid-styles';
             style.textContent = `
                 .micro-grid-modal-box {
-                    width: 700px;
-                    max-width: 90vw;
-                    max-height: 80vh;
+                    width: 900px;
+                    max-width: 95vw;
+                    max-height: 85vh;
                     padding: 0;
                     overflow: hidden;
                     display: flex;
@@ -285,7 +333,7 @@ export class MicroGridManager {
                 }
                 .micro-grid-container {
                     flex: 1;
-                    min-height: 280px;
+                    min-height: 300px;
                     padding: 0;
                     overflow: hidden;
                 }
@@ -294,13 +342,90 @@ export class MicroGridManager {
                 }
                 .micro-toolbar {
                     display: flex;
-                    gap: 8px;
+                    gap: 6px;
                     padding: 8px 16px;
                     border-top: 1px solid rgba(255,255,255,0.1);
                     flex-shrink: 0;
+                    flex-wrap: wrap;
+                    align-items: center;
                 }
                 .micro-toolbar .btn {
                     font-size: 12px;
+                }
+                .micro-toolbar .toolbar-spacer {
+                    flex: 1;
+                }
+                .micro-toolbar .toolbar-sep {
+                    width: 1px;
+                    height: 20px;
+                    background: rgba(255,255,255,0.15);
+                    margin: 0 2px;
+                }
+                .micro-bulk-overlay {
+                    position: absolute;
+                    inset: 0;
+                    background: rgba(0,0,0,0.85);
+                    z-index: 10;
+                    display: flex;
+                    flex-direction: column;
+                    padding: 16px;
+                    gap: 10px;
+                }
+                .micro-bulk-overlay textarea {
+                    flex: 1;
+                    background: #1a1a2e;
+                    color: #e0e0e0;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    padding: 10px;
+                    font-family: monospace;
+                    font-size: 13px;
+                    resize: none;
+                }
+                .micro-bulk-overlay .bulk-preview {
+                    font-size: 12px;
+                    color: #aaa;
+                    max-height: 60px;
+                    overflow-y: auto;
+                }
+                .micro-bulk-overlay .bulk-actions {
+                    display: flex;
+                    gap: 8px;
+                    justify-content: flex-end;
+                }
+                .micro-tag-bulk-overlay {
+                    position: absolute;
+                    inset: 0;
+                    background: rgba(0,0,0,0.85);
+                    z-index: 10;
+                    display: flex;
+                    flex-direction: column;
+                    padding: 16px;
+                    gap: 10px;
+                }
+                .micro-tag-bulk-overlay .tag-input-row {
+                    display: flex;
+                    gap: 8px;
+                    align-items: center;
+                }
+                .micro-tag-bulk-overlay .tag-input-row input {
+                    flex: 1;
+                    background: #1a1a2e;
+                    color: #e0e0e0;
+                    border: 1px solid #444;
+                    border-radius: 4px;
+                    padding: 6px 10px;
+                    font-size: 13px;
+                }
+                .micro-tag-bulk-overlay .tag-suggestions {
+                    display: flex;
+                    flex-wrap: wrap;
+                    gap: 4px;
+                }
+                .micro-tag-bulk-overlay .bulk-actions {
+                    display: flex;
+                    gap: 8px;
+                    justify-content: flex-end;
                 }
             `;
             document.head.appendChild(style);
@@ -326,9 +451,10 @@ export class MicroGridManager {
 
         contentArea.appendChild(tabBar);
 
-        // --- Grid container ---
+        // --- Grid container (position:relative for overlays) ---
         const gridContainer = document.createElement('div');
         gridContainer.className = 'micro-grid-container';
+        gridContainer.style.position = 'relative';
         contentArea.appendChild(gridContainer);
 
         // --- Toolbar ---
@@ -343,6 +469,36 @@ export class MicroGridManager {
             if (activeGrid) this.publishAdd(activeGrid, {});
         }, { signal });
 
+        const bulkAddBtn = document.createElement('button');
+        bulkAddBtn.className = 'btn btn-sm btn-outline';
+        bulkAddBtn.textContent = 'Bulk Add';
+        bulkAddBtn.addEventListener('click', () => {
+            const activeGrid = this._activeTabs.get(groupName);
+            if (activeGrid) this._showBulkAddOverlay(activeGrid, gridContainer);
+        }, { signal });
+
+        const sep1 = document.createElement('span');
+        sep1.className = 'toolbar-sep';
+
+        const addTagBtn = document.createElement('button');
+        addTagBtn.className = 'btn btn-sm btn-outline';
+        addTagBtn.textContent = '+ Tag Selected';
+        addTagBtn.addEventListener('click', () => {
+            const activeGrid = this._activeTabs.get(groupName);
+            if (activeGrid) this._showTagBulkOverlay(activeGrid, gridContainer, 'add');
+        }, { signal });
+
+        const removeTagBtn = document.createElement('button');
+        removeTagBtn.className = 'btn btn-sm btn-outline';
+        removeTagBtn.textContent = '− Tag Selected';
+        removeTagBtn.addEventListener('click', () => {
+            const activeGrid = this._activeTabs.get(groupName);
+            if (activeGrid) this._showTagBulkOverlay(activeGrid, gridContainer, 'remove');
+        }, { signal });
+
+        const sep2 = document.createElement('span');
+        sep2.className = 'toolbar-sep';
+
         const removeBtn = document.createElement('button');
         removeBtn.className = 'btn btn-sm btn-error btn-outline';
         removeBtn.textContent = 'Remove Selected';
@@ -353,8 +509,11 @@ export class MicroGridManager {
             if (!api) return;
             const selected = api.getSelectedRows();
             if (selected.length === 0) return;
-            selected.forEach(row => this.publishRemove(activeGrid, row));
+            this.publishBulkRemove(activeGrid, selected);
         }, { signal });
+
+        const spacer = document.createElement('span');
+        spacer.className = 'toolbar-spacer';
 
         const closeBtn = document.createElement('button');
         closeBtn.className = 'btn btn-sm';
@@ -362,9 +521,13 @@ export class MicroGridManager {
         closeBtn.addEventListener('click', () => closeWithValue('close'), { signal });
 
         toolbar.appendChild(addBtn);
+        toolbar.appendChild(bulkAddBtn);
+        toolbar.appendChild(sep1);
+        toolbar.appendChild(addTagBtn);
+        toolbar.appendChild(removeTagBtn);
+        toolbar.appendChild(sep2);
         toolbar.appendChild(removeBtn);
-        toolbar.appendChild(document.createElement('span'));
-        toolbar.lastChild.style.flex = '1';
+        toolbar.appendChild(spacer);
         toolbar.appendChild(closeBtn);
 
         contentArea.appendChild(toolbar);
@@ -375,8 +538,198 @@ export class MicroGridManager {
         this._renderGrid(firstGrid, gridContainer);
     }
 
+    // =========================================================================
+    // Bulk Add overlay
+    // =========================================================================
+
+    _showBulkAddOverlay(microName, container) {
+        // Prevent double overlay
+        if (container.querySelector('.micro-bulk-overlay')) return;
+
+        const config = MICRO_GRID_CONFIGS[microName];
+        const existingRows = this._data.get(microName) || [];
+        const existingPatterns = new Set(existingRows.map(r => _upper(r.pattern || '')));
+
+        const overlay = document.createElement('div');
+        overlay.className = 'micro-bulk-overlay';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:14px;font-weight:600;color:#fff;';
+        title.textContent = 'Bulk Add — paste tickers / ISINs';
+
+        const subtitle = document.createElement('div');
+        subtitle.style.cssText = 'font-size:12px;color:#888;';
+        subtitle.textContent = 'Comma/newline/tab separated. ISINs (12 chars) and ALL-CAPS tickers auto-detected. Duplicates ignored.';
+
+        const textarea = document.createElement('textarea');
+        textarea.placeholder = 'AAPL, MSFT, GOOGL\nUS0378331005\nTSLA NVDA';
+
+        const preview = document.createElement('div');
+        preview.className = 'bulk-preview';
+
+        textarea.addEventListener('input', () => {
+            const items = _extractIdentifiers(textarea.value);
+            const deduped = items.filter(i => !existingPatterns.has(_upper(i.pattern)));
+            preview.textContent = deduped.length
+                ? `Will add ${deduped.length} item(s): ${deduped.map(i => i.pattern).join(', ')}`
+                : items.length ? 'All items already exist.' : '';
+        });
+
+        const actions = document.createElement('div');
+        actions.className = 'bulk-actions';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-sm';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', () => overlay.remove());
+
+        const importBtn = document.createElement('button');
+        importBtn.className = 'btn btn-sm btn-primary';
+        importBtn.textContent = 'Import';
+        importBtn.addEventListener('click', () => {
+            const items = _extractIdentifiers(textarea.value);
+            const deduped = items.filter(i => !existingPatterns.has(_upper(i.pattern)));
+            if (deduped.length > 0) {
+                this.publishBulkAdd(microName, deduped);
+            }
+            overlay.remove();
+        });
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(importBtn);
+
+        overlay.appendChild(title);
+        overlay.appendChild(subtitle);
+        overlay.appendChild(textarea);
+        overlay.appendChild(preview);
+        overlay.appendChild(actions);
+
+        container.appendChild(overlay);
+        textarea.focus();
+    }
+
+    // =========================================================================
+    // Bulk Tag overlay (add or remove tags to/from selected rows)
+    // =========================================================================
+
+    _showTagBulkOverlay(microName, container, mode) {
+        if (container.querySelector('.micro-tag-bulk-overlay')) return;
+
+        const api = this._gridApis.get(microName);
+        if (!api) return;
+
+        const selected = api.getSelectedRows();
+        if (selected.length === 0) {
+            // Brief visual hint — no rows selected
+            return;
+        }
+
+        const config = MICRO_GRID_CONFIGS[microName];
+        const pkCol = config.primaryKeys[0];
+
+        const overlay = document.createElement('div');
+        overlay.className = 'micro-tag-bulk-overlay';
+
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:14px;font-weight:600;color:#fff;';
+        title.textContent = mode === 'add'
+            ? `Add tag to ${selected.length} selected row(s)`
+            : `Remove tag from ${selected.length} selected row(s)`;
+
+        // Input row
+        const inputRow = document.createElement('div');
+        inputRow.className = 'tag-input-row';
+        const tagInput = document.createElement('input');
+        tagInput.type = 'text';
+        tagInput.placeholder = 'Type tag name and press Enter';
+        inputRow.appendChild(tagInput);
+
+        // Tag suggestions
+        const sugContainer = document.createElement('div');
+        sugContainer.className = 'tag-suggestions';
+        const allTags = [...getAllKnownTags()].sort();
+        let chosenTag = '';
+
+        const renderSuggestions = () => {
+            sugContainer.innerHTML = '';
+            const tags = mode === 'remove'
+                ? _getTagsFromRows(selected)
+                : allTags;
+            tags.forEach(tag => {
+                const pill = _createPillEl(tag, false);
+                pill.style.cursor = 'pointer';
+                pill.addEventListener('click', () => {
+                    tagInput.value = tag;
+                    chosenTag = tag;
+                });
+                sugContainer.appendChild(pill);
+            });
+        };
+        renderSuggestions();
+
+        tagInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                chosenTag = tagInput.value.trim();
+                if (chosenTag) _applyTag();
+            }
+        });
+
+        const actions = document.createElement('div');
+        actions.className = 'bulk-actions';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'btn btn-sm';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.addEventListener('click', () => overlay.remove());
+
+        const applyBtn = document.createElement('button');
+        applyBtn.className = 'btn btn-sm btn-primary';
+        applyBtn.textContent = mode === 'add' ? 'Add Tag' : 'Remove Tag';
+        applyBtn.addEventListener('click', () => {
+            chosenTag = tagInput.value.trim();
+            if (chosenTag) _applyTag();
+        });
+
+        const _applyTag = () => {
+            if (!chosenTag) return;
+            const updates = [];
+            for (const row of selected) {
+                const currentTags = _parseTags(row.tags);
+                let newTags;
+                if (mode === 'add') {
+                    if (currentTags.includes(chosenTag)) continue;
+                    newTags = [...currentTags, chosenTag];
+                } else {
+                    if (!currentTags.includes(chosenTag)) continue;
+                    newTags = currentTags.filter(t => t !== chosenTag);
+                }
+                updates.push({ [pkCol]: row[pkCol], tags: newTags.join(',') });
+            }
+            if (updates.length > 0) {
+                this.publishBulkUpdate(microName, updates);
+                getAllKnownTags().add(chosenTag);
+            }
+            overlay.remove();
+        };
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(applyBtn);
+
+        overlay.appendChild(title);
+        overlay.appendChild(inputRow);
+        overlay.appendChild(sugContainer);
+        overlay.appendChild(actions);
+
+        container.appendChild(overlay);
+        tagInput.focus();
+    }
+
+    // =========================================================================
+    // Grid rendering
+    // =========================================================================
+
     _switchTab(groupName, gridName, container) {
-        // Destroy current grid
         const currentGrid = this._activeTabs.get(groupName);
         if (currentGrid) {
             this._destroyGrid(currentGrid);
@@ -401,13 +754,14 @@ export class MicroGridManager {
         container.appendChild(gridDiv);
 
         const rows = this._data.get(microName) || [];
+        seedKnownTags(rows);
         const mgr = this;
 
         const gridOptions = {
             columnDefs: config.columns,
             rowData: rows,
             rowSelection: 'multiple',
-            suppressRowClickSelection: false,
+            suppressRowClickSelection: true,
             animateRows: false,
             getRowId: (params) => String(params.data[config.primaryKeys[0]]),
             defaultColDef: {
@@ -432,7 +786,6 @@ export class MicroGridManager {
             },
         };
 
-        // Use agGrid.createGrid (AG Grid 31+)
         const api = agGrid.createGrid(gridDiv, gridOptions);
         this._gridApis.set(microName, api);
     }
@@ -453,14 +806,12 @@ export class MicroGridManager {
         const groupConfig = MICRO_GRID_GROUPS[groupName];
         if (!groupConfig) return;
 
-        // Abort all modal event listeners
         const ac = this._abortControllers.get(groupName);
         if (ac) {
             ac.abort();
             this._abortControllers.delete(groupName);
         }
 
-        // Destroy all grids in the group
         for (const gridName of groupConfig.grids) {
             this._destroyGrid(gridName);
             await this.unsubscribe(gridName);
@@ -470,27 +821,20 @@ export class MicroGridManager {
         this._activeTabs.delete(groupName);
     }
 
-    /**
-     * Full cleanup — call on page destroy.
-     */
     async destroy() {
-        // Abort all event listeners
         for (const [, ac] of this._abortControllers) {
             try { ac.abort(); } catch (e) { /* ignore */ }
         }
         this._abortControllers.clear();
 
-        // Close all open modals
         for (const [groupName, dialog] of this._openModals) {
             try { if (dialog?.open) dialog.close(); } catch (e) { /* ignore */ }
         }
 
-        // Destroy all grids
         for (const [name] of this._gridApis) {
             this._destroyGrid(name);
         }
 
-        // Unsubscribe from all micro-grids
         for (const microName of new Set(this._subscribed)) {
             await this.unsubscribe(microName).catch(() => {});
         }
@@ -502,4 +846,18 @@ export class MicroGridManager {
         this._handlers.clear();
         this._subscribed.clear();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+function _getTagsFromRows(rows) {
+    const tagSet = new Set();
+    for (const row of rows) {
+        for (const t of _parseTags(row.tags)) {
+            tagSet.add(t);
+        }
+    }
+    return [...tagSet].sort();
 }
