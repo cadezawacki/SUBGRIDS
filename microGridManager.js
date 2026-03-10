@@ -274,6 +274,9 @@ export class MicroGridManager {
 
         const addRows = payloads.add || [];
         if (addRows.length > 0) {
+            // Deduplicate: remove any existing rows with the same PK (optimistic UI may have already added them)
+            const addIds = new Set(addRows.map(r => String(r[pkCol])));
+            rows = rows.filter(r => !addIds.has(String(r[pkCol])));
             rows = [...rows, ...addRows];
             seedKnownTags(addRows);
             const patterns = addRows.map(r => r.pattern || '?').join(', ');
@@ -827,19 +830,24 @@ export class MicroGridManager {
         document.body.appendChild(menu);
         this._contextMenus.set(microName, menu);
 
-        // Dismiss on click outside
+        // Dismiss on click outside — store listener ref for cleanup
         const dismiss = (e) => {
             if (!menu.contains(e.target)) {
                 this._dismissContextMenu();
-                document.removeEventListener('click', dismiss, true);
             }
         };
+        menu._dismissListener = dismiss;
         setTimeout(() => document.addEventListener('click', dismiss, true), 0);
     }
 
     _dismissContextMenu() {
         for (const [, menu] of this._contextMenus) {
-            try { menu.remove(); } catch (e) { /* ignore */ }
+            try {
+                if (menu._dismissListener) {
+                    document.removeEventListener('click', menu._dismissListener, true);
+                }
+                menu.remove();
+            } catch (e) { /* ignore */ }
         }
         this._contextMenus.clear();
     }
@@ -850,7 +858,11 @@ export class MicroGridManager {
 
     _toggleChangeLog(container) {
         const existing = container.querySelector('.micro-changelog-panel');
-        if (existing) { existing.remove(); return; }
+        if (existing) {
+            if (existing._unsub) existing._unsub();
+            existing.remove();
+            return;
+        }
 
         const panel = document.createElement('div');
         panel.className = 'micro-changelog-panel';
@@ -858,7 +870,10 @@ export class MicroGridManager {
         const title = document.createElement('div');
         title.style.cssText = 'font-size:13px;font-weight:600;color:#fff;margin-bottom:6px;display:flex;justify-content:space-between;';
         title.innerHTML = 'Activity Log <span style="cursor:pointer;opacity:0.6" class="cl-close">×</span>';
-        title.querySelector('.cl-close').addEventListener('click', () => panel.remove());
+        title.querySelector('.cl-close').addEventListener('click', () => {
+            if (panel._unsub) panel._unsub();
+            panel.remove();
+        });
 
         const list = document.createElement('div');
         list.className = 'micro-changelog-list';
@@ -1077,12 +1092,13 @@ export class MicroGridManager {
         const panel = document.createElement('div');
         panel.className = 'micro-tag-mgmt-panel';
 
-        const allRows = this._data.get(microName) || [];
         const config = MICRO_GRID_CONFIGS[microName];
         const pkCol = config.primaryKeys[0];
 
         const renderPanel = () => {
             panel.innerHTML = '';
+            // Re-read data each render to get fresh counts
+            const allRows = this._data.get(microName) || [];
 
             const header = document.createElement('div');
             header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;';

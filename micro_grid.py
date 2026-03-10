@@ -227,7 +227,7 @@ class MicroGridActor:
 
     async def persist(self) -> None:
         """Flush dirty rows to the database."""
-        if not self.config.persist or not self._dirty:
+        if not self.config.persist:
             return
         from app.server import get_db
         db = get_db()
@@ -238,6 +238,8 @@ class MicroGridActor:
 
         try:
             async with self._lock:
+                if not self._dirty:
+                    return
                 dirty_ids = set(self._persist_dirty_ids)
                 deleted_ids = set(self._persist_deleted_ids)
                 self._persist_dirty_ids.clear()
@@ -285,13 +287,24 @@ class MicroGridActor:
     # -- Subscriber management --
 
     def add_subscriber(self, ws) -> str:
-        token = str(id(ws))
+        token = str(uuid.uuid4())
         self._subscribers[token] = weakref.ref(ws)
+        # Store token on ws for removal lookup
+        if not hasattr(ws, '_micro_sub_tokens'):
+            ws._micro_sub_tokens = {}
+        ws._micro_sub_tokens[self.config.name] = token
         return token
 
     def remove_subscriber(self, ws) -> None:
-        token = str(id(ws))
-        self._subscribers.pop(token, None)
+        token = getattr(ws, '_micro_sub_tokens', {}).get(self.config.name)
+        if token:
+            self._subscribers.pop(token, None)
+            ws._micro_sub_tokens.pop(self.config.name, None)
+        else:
+            # Fallback: search for matching ws ref
+            to_remove = [t for t, ref in self._subscribers.items() if ref() is ws]
+            for t in to_remove:
+                del self._subscribers[t]
 
     def subscriber_count(self) -> int:
         dead = [t for t, ref in self._subscribers.items() if ref() is None]
@@ -337,7 +350,8 @@ class MicroGridActor:
         Returns: DataFrame of changed rows (the delta), or None if no changes.
         """
         pk_col = self.config.primary_keys[0]
-        delta_rows: List[Dict[str, Any]] = []
+        add_delta_rows: List[Dict[str, Any]] = []
+        update_delta_rows: List[Dict[str, Any]] = []
         has_removes = False
 
         async with self._lock:
@@ -357,13 +371,18 @@ class MicroGridActor:
                     for col, default in self.config.columns.items():
                         filled[col] = row.get(col, default)
                     new_rows.append(filled)
-                    delta_rows.append(filled)
+                    add_delta_rows.append(filled)
 
                 if new_rows:
                     new_df = pl.DataFrame(
                         new_rows,
                         schema={c: self.config.column_types[c] for c in self.config.columns},
                     )
+                    # Deduplicate: remove existing rows with same PK before adding
+                    new_ids = [str(r[pk_col]) for r in new_rows]
+                    dedup_mask = current[pk_col].cast(pl.String).is_in(new_ids)
+                    if dedup_mask.sum() > 0:
+                        current = current.filter(~dedup_mask)
                     current = pl.concat([current, new_df], how="diagonal_relaxed")
                     for r in new_rows:
                         self._persist_dirty_ids.add(str(r[pk_col]))
@@ -395,7 +414,7 @@ class MicroGridActor:
                     # Materialize the updated row for delta
                     updated = current.filter(mask)
                     if len(updated) > 0:
-                        delta_rows.extend(updated.to_dicts())
+                        update_delta_rows.extend(updated.to_dicts())
                     self._persist_dirty_ids.add(rid_str)
 
             # --- Remove ---
@@ -416,20 +435,24 @@ class MicroGridActor:
                         self._persist_dirty_ids.discard(rid)
 
             self._data = current
-            if delta_rows or has_removes:
+            all_delta_rows = add_delta_rows + update_delta_rows
+            if all_delta_rows or has_removes:
                 self._dirty = True
 
             # Build delta DataFrame inside the lock to avoid races
-            if delta_rows:
+            if all_delta_rows:
                 delta_df = pl.DataFrame(
-                    delta_rows,
+                    all_delta_rows,
                     schema={c: self.config.column_types[c] for c in self.config.columns},
                     strict=False,
                 )
+                # Attach counts so callers can slice add vs update deltas
+                delta_df._micro_add_count = len(add_delta_rows)
             elif has_removes:
                 delta_df = pl.DataFrame(
                     schema={c: self.config.column_types[c] for c in self.config.columns},
                 )
+                delta_df._micro_add_count = 0
             else:
                 return None
 

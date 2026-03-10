@@ -3543,19 +3543,18 @@ class GridSystem:
 
         # 2. Build delta payload for broadcast
         delta_rows = delta_df.to_dicts()
+        add_count = getattr(delta_df, '_micro_add_count', 0)
         remove_payloads = payloads.get("remove") or []
-        add_rows = payloads.get("add") or []
-        update_rows = payloads.get("update") or []
 
         broadcast_payloads = {}
         if remove_payloads:
             pk_col = config.primary_keys[0]
             removed_ids = [str(r.get(pk_col)) for r in remove_payloads if r.get(pk_col)]
             broadcast_payloads["remove"] = [{config.primary_keys[0]: rid} for rid in removed_ids]
-        if add_rows:
-            broadcast_payloads["add"] = delta_rows[:len(add_rows)]
-        if update_rows:
-            broadcast_payloads["update"] = delta_rows[len(add_rows):]
+        if add_count > 0:
+            broadcast_payloads["add"] = delta_rows[:add_count]
+        if add_count < len(delta_rows):
+            broadcast_payloads["update"] = delta_rows[add_count:]
 
         micro_pub = MicroPublish(
             micro_name=micro_name,
