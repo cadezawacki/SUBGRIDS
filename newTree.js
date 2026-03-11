@@ -1261,25 +1261,50 @@ export class TreeColumnChooser {
     _applyDragReorder(orderedNodes) {
         if (!this.api) return;
 
-        // Build a full column order: pinned-left first, then center in new order, then pinned-right
-        const leftCols = [];
-        const centerCols = [];
-        const rightCols = [];
+        // Build desired column order from the drag result.
+        // orderedNodes only contains visible/selected columns.
+        // We need to produce a full applyColumnState that preserves
+        // hidden columns in their relative positions while reordering
+        // the visible ones according to the drag.
 
-        for (const node of orderedNodes) {
-            const col = this.api.getColumn(node.id);
-            if (!col) continue;
-            if (col.pinned === 'left') leftCols.push(node.id);
-            else if (col.pinned === 'right') rightCols.push(node.id);
-            else centerCols.push(node.id);
+        const desiredOrder = orderedNodes.map(n => n.id);
+
+        // Get the current full column state from AG-Grid (includes hidden cols)
+        const currentState = this.api.getColumnState();
+        if (!currentState) return;
+
+        // Separate into the visible columns we're reordering vs everything else
+        const desiredSet = new Set(desiredOrder);
+        const otherCols = []; // hidden columns not in our reorder set
+        const reorderedCols = new Map(); // colId -> state entry
+
+        for (const cs of currentState) {
+            if (desiredSet.has(cs.colId)) {
+                reorderedCols.set(cs.colId, cs);
+            } else {
+                otherCols.push(cs);
+            }
         }
 
-        // Apply the reordered center columns using moveColumns
-        centerCols.forEach((colId, idx) => {
-            try { this.api.moveColumn(colId, leftCols.length + idx); } catch (_) {}
-        });
+        // Build final state: place reordered visible columns in the desired
+        // order, preserving hidden columns in their original relative slots.
+        // Strategy: walk the original state; replace visible-reordered cols
+        // with the next item from desiredOrder.
+        let desiredIdx = 0;
+        const newState = [];
+        for (const cs of currentState) {
+            if (desiredSet.has(cs.colId)) {
+                // Substitute with the next column from the drag order
+                const nextId = desiredOrder[desiredIdx++];
+                newState.push(reorderedCols.get(nextId));
+            } else {
+                newState.push(cs);
+            }
+        }
 
-        // Update sort column cache
+        this.api.applyColumnState({ state: newState, applyOrder: true });
+
+        // Update sort column cache to match the new grid order
         this._updateSortColumns();
         this.hasUnsavedChanges = true;
         this._updateButtonStates();
