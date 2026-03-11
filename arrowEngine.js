@@ -4712,10 +4712,14 @@ export class ArrowAgGridAdapter {
                     return isArrowKey(params.event) || isCopyHotKey(params.event);
                 },
                 valueGetter: (p) => {
-                    const colId = p.column ? p.column.getColId() : (p.colId || p.colDef?.field);
-                    const ri = p?.data?.[this._idxProperty];
-                    if (ri == null || colId == null) return null;
-                    return engine.getCell(ri | 0, colId, p);
+                    try {
+                        const colId = p.column ? p.column.getColId() : (p.colId || p.colDef?.field);
+                        const ri = p?.data?.[this._idxProperty];
+                        if (ri == null || colId == null) return null;
+                        return engine.getCell(ri | 0, colId, p);
+                    } catch (e) {
+                        return null;
+                    }
                 },
                 valueSetter: nullishValueSetter,
             },
