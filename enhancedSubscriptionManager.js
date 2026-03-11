@@ -178,6 +178,7 @@ export class SubscriptionManager {
             case 'micro_unsubscribe':
                 await this._handleMicroGridMessage(message);
                 break;
+            case 'redistribute': break;
             default: console.warn("Unknown action:", action, message);
         }
 

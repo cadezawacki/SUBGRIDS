@@ -16,7 +16,7 @@ _SKEW_BUCKET_COLS = ["refSkewPx", "refSkewSpd"]
 _ID_DISPLAY_COLS = ["ticker", "isin", "cusip", "description", "userSide", "QT"]
 
 
-async def process(grid_frame: pl.DataFrame, primary_keys: List[str], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def process(grid_frame: pl.DataFrame, primary_keys: List[str], params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Compute proposed refSkew redistribution.
 
@@ -117,12 +117,8 @@ async def process(grid_frame: pl.DataFrame, primary_keys: List[str], params: Opt
     summary_cols = [c for c in summary_cols if c in df.columns]
     summary_df = df.select(summary_cols)
 
-    # Build update rows (for applying — just PK + new skew value)
-    update_records = []
-    for row in df.iter_rows(named=True):
-        rec = {pk: row[pk] for pk in pk_cols}
-        rec[skew_col] = row["proposed_skew"]
-        update_records.append(rec)
+    # Build update rows vectorially (PK + new skew value only)
+    update_records = df.select(pk_cols + ["proposed_skew"]).rename({"proposed_skew": skew_col}).to_dicts()
 
     stats = {
         "total_gross": round(total_gross, 2),

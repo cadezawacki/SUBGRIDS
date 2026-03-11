@@ -101,6 +101,9 @@ export class PivotWidget extends BaseWidget {
     }
 
     async _redistributeProceeds() {
+        if (this._redistInFlight) return;
+        this._redistInFlight = true;
+
         const page = this.context.page;
         const toast = page.toastManager();
         const mm = page.modalManager();
@@ -111,6 +114,7 @@ export class PivotWidget extends BaseWidget {
         const roomContext = page._ptRaw?.context;
         if (!roomContext) {
             toast.error('Redistribute', 'No active portfolio context.');
+            this._redistInFlight = false;
             return;
         }
 
@@ -136,6 +140,13 @@ export class PivotWidget extends BaseWidget {
                 return;
             }
 
+            // Escape HTML entities to prevent XSS from user-editable fields
+            const esc = (v) => {
+                if (v == null) return '';
+                const s = typeof v === 'number' ? v.toLocaleString(undefined, {maximumFractionDigits: 4}) : String(v);
+                return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+            };
+
             // Build summary table HTML
             const displayCols = ['ticker', 'isin', 'description', 'grossSize', 'weight_pct', 'current_skew', 'proposed_skew', 'delta'];
             const colLabels = {
@@ -147,21 +158,17 @@ export class PivotWidget extends BaseWidget {
             // Filter to columns that actually exist in the data
             const cols = displayCols.filter(c => summary[0].hasOwnProperty(c));
 
-            const headerRow = cols.map(c => `<th>${colLabels[c] || c}</th>`).join('');
+            const headerRow = cols.map(c => `<th>${colLabels[c] || esc(c)}</th>`).join('');
             const bodyRows = summary.map(row => {
-                const cells = cols.map(c => {
-                    let val = row[c];
-                    if (typeof val === 'number') val = val.toLocaleString(undefined, {maximumFractionDigits: 4});
-                    return `<td>${val ?? ''}</td>`;
-                }).join('');
+                const cells = cols.map(c => `<td>${esc(row[c])}</td>`).join('');
                 return `<tr>${cells}</tr>`;
             }).join('');
 
             const statsHtml = `<div class="redist-stats" style="margin-bottom:10px;font-size:12px;color:var(--text-secondary, #aaa);">
-                <span><b>Rows:</b> ${stats.row_count}</span> &middot;
-                <span><b>Total Gross:</b> ${stats.total_gross?.toLocaleString()}</span> &middot;
-                <span><b>Uniform Skew:</b> ${stats.uniform_skew}</span> &middot;
-                <span><b>Column:</b> ${stats.skew_column}</span>
+                <span><b>Rows:</b> ${esc(stats.row_count)}</span> &middot;
+                <span><b>Total Gross:</b> ${esc(stats.total_gross)}</span> &middot;
+                <span><b>Uniform Skew:</b> ${esc(stats.uniform_skew)}</span> &middot;
+                <span><b>Column:</b> ${esc(stats.skew_column)}</span>
             </div>`;
 
             const tableHtml = `
@@ -198,6 +205,8 @@ export class PivotWidget extends BaseWidget {
         } catch (err) {
             console.error('[redistribute]', err);
             toast.error('Redistribute', `Error: ${err.message || err}`);
+        } finally {
+            this._redistInFlight = false;
         }
     }
 

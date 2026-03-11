@@ -2082,11 +2082,11 @@ class ConnectionManager:
                 "data": {"error": f"Failed to read grid data: {e}"},
             })
 
-        # Call the processor
+        # Call the processor (CPU-bound — run off the event loop)
         try:
             from processRedistributeProceeds import process as redistribute_process
             params = (d.get("data") or {}).get("params") or {}
-            result = await redistribute_process(grid_frame, pk_cols, params)
+            result = await asyncio.to_thread(redistribute_process, grid_frame, pk_cols, params)
         except Exception as e:
             await log.error(f"[redistribute] process failed: {e}")
             return await self._send_direct_message(websocket, {
