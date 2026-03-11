@@ -5933,25 +5933,6 @@ export class ArrowAgGridAdapter {
         this._invalidateIdxCache();
         const api = this.api;
         if (!api) return;
-
-        // During active cell editing, defer epoch processing to the next
-        // animation frame so the editor stays responsive.  The deferred call
-        // still coalesces with any new epochs that arrive in the meantime.
-        try {
-            const editing = api.getEditingCells?.();
-            if (editing && editing.length > 0) {
-                if (!this._epochDeferRAF) {
-                    this._epochDeferRAF = requestAnimationFrame(() => {
-                        this._epochDeferRAF = null;
-                        // Re-emit so it coalesces with anything that arrived
-                        // while we were waiting.
-                        this.engine._emitEpochChange(payload || { global: true });
-                    });
-                }
-                return;
-            }
-        } catch {}
-
         const saved = api.getCellRanges?.();
         let allCols;
 
