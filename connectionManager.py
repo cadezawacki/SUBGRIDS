@@ -1026,7 +1026,7 @@ class ConnectionManager:
                 cnt+=1
         try:
             outbounds = []
-            await log.notify(f"Injesting {n} micro updates")
+            await log.notify(f"Ingesting {cnt} micro update categories")
             async for outbound in self.grid_system.ingest_micro_publish(
                     micro_name, payloads, user=user, trace=trace
             ):

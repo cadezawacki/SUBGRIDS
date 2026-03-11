@@ -193,7 +193,7 @@ class MicroGridActor:
 
         try:
             df = await db.select(table_name)
-            if df is not None and len(df) > 0:
+            if df is not None and not df.hyper.is_empty():
                 # Align schema — only keep columns we know about
                 known = set(self.config.columns.keys())
                 keep = [c for c in df.columns if c in known]
@@ -208,7 +208,7 @@ class MicroGridActor:
                     if casts:
                         df = df.cast(casts, strict=False)
                     self._data = df
-                await log.info(f"[MicroGrid] Loaded {len(self._data)} rows from {table_name}")
+                await log.info(f"[MicroGrid] Loaded {self._data.hyper.height()} rows from {table_name}")
             else:
                 await log.info(f"[MicroGrid] Table {table_name} exists but is empty")
         except Exception as e:
@@ -265,7 +265,7 @@ class MicroGridActor:
             if dirty_ids:
                 pk_col = self.config.primary_keys[0]
                 dirty_df = data_snapshot.filter(pl.col(pk_col).is_in(list(dirty_ids)))
-                if len(dirty_df) > 0:
+                if not dirty_df.hyper.is_empty():
                     await db.upsert(
                         table_name=self.config.table_name,
                         dataframe=dirty_df,
@@ -346,89 +346,100 @@ class MicroGridActor:
         Apply add/update/remove payloads to the in-memory data.
 
         payloads format:
-            { "add": [...rows], "update": [...rows], "remove": [...rows] }
+            { "add": List[pl.DataFrame], "update": List[pl.DataFrame], "remove": List[pl.DataFrame] }
+
+        Each value is a list of polars DataFrames (as deserialized from the wire).
 
         Returns: DataFrame of changed rows (the delta), or None if no changes.
         """
         pk_col = self.config.primary_keys[0]
-        add_delta_rows: List[Dict[str, Any]] = []
-        update_delta_rows: List[Dict[str, Any]] = []
+        target_schema = {c: self.config.column_types[c] for c in self.config.columns}
+
+        # --- Normalize payloads: merge List[pl.DataFrame] into single DataFrames ---
+        add_df = self._merge_payload_frames(payloads.get("add"), target_schema)
+        update_df = self._merge_payload_frames(payloads.get("update"), target_schema)
+        remove_df = self._merge_payload_frames(payloads.get("remove"), target_schema)
+
+        add_delta: Optional[pl.DataFrame] = None
+        update_delta: Optional[pl.DataFrame] = None
         has_removes = False
 
         async with self._lock:
             current = self._data
 
             # --- Add ---
-            add_rows = payloads.get("add") or []
-            if add_rows:
-                new_rows = []
-                for row in add_rows:
-                    # Auto-generate ID if needed
-                    if pk_col not in row or not row[pk_col]:
-                        row = dict(row)
-                        row[pk_col] = str(uuid.uuid4())
-                        filled = {}
-                        for col, default in self.config.columns.items():
-                            filled[col] = row.get(col, default)
-                    new_rows.append(filled)
-                    add_delta_rows.append(filled)
+            if add_df is not None and not add_df.hyper.is_empty():
+                # Auto-generate IDs for rows missing the PK
+                pk_series = add_df[pk_col].cast(pl.String)
+                needs_id_mask = pk_series.is_null() | (pk_series == "")
+                if needs_id_mask.any():
+                    new_ids = [str(uuid.uuid4()) if needs else existing
+                               for needs, existing in zip(needs_id_mask.to_list(), pk_series.to_list())]
+                    add_df = add_df.with_columns(pl.Series(pk_col, new_ids, dtype=pl.String))
 
-                if new_rows:
-                    new_df = pl.DataFrame(
-                        new_rows,
-                        schema={c: self.config.column_types[c] for c in self.config.columns},
-                    )
-                    # Deduplicate: remove existing rows with same PK before adding
-                    new_ids = [str(r[pk_col]) for r in new_rows]
-                    dedup_mask = current[pk_col].cast(pl.String).is_in(new_ids)
-                    if dedup_mask.sum() > 0:
-                        current = current.filter(~dedup_mask)
-                    current = pl.concat([current, new_df], how="diagonal_relaxed")
-                    for r in new_rows:
-                        self._persist_dirty_ids.add(str(r[pk_col]))
+                # Fill missing columns with defaults
+                for col, default in self.config.columns.items():
+                    if col not in add_df.columns:
+                        expected_type = self.config.column_types.get(col, pl.String)
+                        add_df = add_df.with_columns(pl.lit(default, dtype=expected_type).alias(col))
+
+                # Ensure column order and types match target schema
+                add_df = add_df.select([pl.col(c).cast(target_schema[c], strict=False) for c in target_schema])
+
+                # Deduplicate: remove existing rows with same PK before adding
+                new_ids_list = add_df[pk_col].cast(pl.String).to_list()
+                dedup_mask = current[pk_col].cast(pl.String).is_in(new_ids_list)
+                if dedup_mask.any():
+                    current = current.filter(~dedup_mask)
+                current = pl.concat([current, add_df], how="diagonal_relaxed")
+
+                # Track dirty IDs
+                for rid in new_ids_list:
+                    self._persist_dirty_ids.add(str(rid))
+
+                add_delta = add_df
 
             # --- Update ---
-            update_rows = payloads.get("update") or []
-            if update_rows:
-                for row in update_rows:
-                    rid = row.get(pk_col)
-                    if rid is None:
-                        continue
-                    rid_str = str(rid)
+            if update_df is not None and not update_df.hyper.is_empty():
+                update_cols = [c for c in update_df.columns if c != pk_col and c in current.columns]
+                update_ids = update_df[pk_col].cast(pl.String).to_list()
 
-                    # Find and update the row
+                for rid_str in update_ids:
                     mask = current[pk_col].cast(pl.String) == rid_str
-                    if mask.sum() == 0:
+                    if not mask.any():
                         continue
-                    for col, val in row.items():
-                        if col == pk_col:
-                            continue
-                        if col not in current.columns:
-                            continue
+                    # Get the update row for this ID
+                    row_df = update_df.filter(update_df[pk_col].cast(pl.String) == rid_str)
+                    if row_df.hyper.is_empty():
+                        continue
+                    # Apply each column update
+                    col_updates = []
+                    for col in update_cols:
+                        val = row_df[col].item(0)
                         expected_type = self.config.column_types.get(col, pl.String)
-                        current = current.with_columns(
+                        col_updates.append(
                             pl.when(mask)
                             .then(pl.lit(val, dtype=expected_type))
                             .otherwise(pl.col(col))
                             .alias(col)
                         )
-                    # Materialize the updated row for delta
-                    updated = current.filter(mask)
-                    if len(updated) > 0:
-                        update_delta_rows.extend(updated.to_dicts())
+                    if col_updates:
+                        current = current.with_columns(col_updates)
                     self._persist_dirty_ids.add(rid_str)
 
+                # Materialize updated rows for delta
+                all_update_ids = update_df[pk_col].cast(pl.String).to_list()
+                updated_rows = current.filter(current[pk_col].cast(pl.String).is_in(all_update_ids))
+                if not updated_rows.hyper.is_empty():
+                    update_delta = updated_rows
+
             # --- Remove ---
-            remove_rows = payloads.get("remove") or []
-            if remove_rows:
-                remove_id_set = set()
-                for row in remove_rows:
-                    rid = row.get(pk_col)
-                    if rid is not None:
-                        remove_id_set.add(str(rid))
+            if remove_df is not None and not remove_df.hyper.is_empty():
+                remove_ids = remove_df[pk_col].cast(pl.String).to_list()
+                remove_id_set = set(remove_ids)
                 if remove_id_set:
                     remove_mask = current[pk_col].cast(pl.String).is_in(list(remove_id_set))
-                    if remove_mask.sum() > 0:
+                    if remove_mask.any():
                         has_removes = True
                     current = current.filter(~remove_mask)
                     for rid in remove_id_set:
@@ -436,28 +447,71 @@ class MicroGridActor:
                         self._persist_dirty_ids.discard(rid)
 
             self._data = current
-            all_delta_rows = add_delta_rows + update_delta_rows
-            if all_delta_rows or has_removes:
+
+            # Build combined delta
+            delta_parts = []
+            add_count = 0
+            if add_delta is not None:
+                delta_parts.append(add_delta)
+                add_count = add_delta.height
+            if update_delta is not None:
+                delta_parts.append(update_delta)
+
+            if delta_parts or has_removes:
                 self._dirty = True
 
-            # Build delta DataFrame inside the lock to avoid races
-            if all_delta_rows:
-                delta_df = pl.DataFrame(
-                    all_delta_rows,
-                    schema={c: self.config.column_types[c] for c in self.config.columns},
-                    strict=False,
-                )
-                # Attach counts so callers can slice add vs update deltas
-                delta_df._micro_add_count = len(add_delta_rows)
+            if delta_parts:
+                delta_df = pl.concat(delta_parts, how="diagonal_relaxed") if len(delta_parts) > 1 else delta_parts[0]
+                # Ensure schema matches
+                delta_df = delta_df.select([pl.col(c).cast(target_schema[c], strict=False) for c in target_schema if c in delta_df.columns])
+                delta_df._micro_add_count = add_count
             elif has_removes:
-                delta_df = pl.DataFrame(
-                    schema={c: self.config.column_types[c] for c in self.config.columns},
-                )
+                delta_df = pl.DataFrame(schema=target_schema)
                 delta_df._micro_add_count = 0
             else:
                 return None
 
         return delta_df
+
+    @staticmethod
+    def _merge_payload_frames(
+        frames: Any,
+        target_schema: Dict[str, pl.DataType],
+    ) -> Optional[pl.DataFrame]:
+        """
+        Normalize a payload value into a single pl.DataFrame.
+
+        Handles:
+          - None / empty list → None
+          - List[pl.DataFrame] → concat into one
+          - List[dict] → build DataFrame (legacy/rules path)
+          - single pl.DataFrame → pass through
+        """
+        if frames is None:
+            return None
+        if isinstance(frames, pl.DataFrame):
+            return frames
+        frames = ensure_list(frames)
+        if not frames:
+            return None
+
+        # Check first element to determine type
+        first = frames[0]
+        if isinstance(first, pl.DataFrame):
+            # List[pl.DataFrame] — concat
+            non_empty = [f for f in frames if not f.hyper.is_empty()]
+            if not non_empty:
+                return None
+            if len(non_empty) == 1:
+                return non_empty[0]
+            return pl.concat(non_empty, how="diagonal_relaxed")
+        elif isinstance(first, dict):
+            # List[dict] — legacy path (rules engine)
+            if not frames:
+                return None
+            return pl.DataFrame(frames, schema=target_schema, strict=False)
+        else:
+            return None
 
 
 # =============================================================================
@@ -471,7 +525,7 @@ async def init_micro_grids() -> None:
         actor = MicroGridActor(config)
         await actor.load_from_db()
         registry.set_actor(config.name, actor)
-        await log.info(f"[MicroGrid] Initialized: {config.name} ({len(actor._data)} rows)")
+        await log.info(f"[MicroGrid] Initialized: {config.name} ({actor._data.hyper.height()} rows)")
 
 
 async def shutdown_micro_grids() -> None:
