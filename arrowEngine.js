@@ -595,8 +595,7 @@ class EditSignalCoalescer {
 
         this._epoch = 0;
 
-        this._mc = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
-        if (this._mc) this._mc.port1.onmessage = () => this._runSlice();
+        this._mc = null; // Disabled: MessageChannel fires before rendering, creating tight loops
 
         this._stats = {
             cellsEnqueued: 0,
@@ -778,8 +777,9 @@ class EditSignalCoalescer {
         }
 
         if (this._sliceIdx < entries.length) {
-            if (this._mc) this._mc.port1.postMessage(1);
-            else setTimeout(() => this._runSlice(), 0);
+            // Use setTimeout instead of MessageChannel to yield to the event loop
+            // between slices, allowing rendering and input processing.
+            setTimeout(() => this._runSlice(), 0);
             return;
         }
 
@@ -796,6 +796,17 @@ class EditSignalCoalescer {
             this._finalizePostEmit([]);
             return;
         }
+
+        // Yield to the event loop BEFORE emitting, so the browser can render
+        // and process input.  emitAsync uses queueMicrotask which chains
+        // microtasks synchronously — without this yield, a cascade of
+        // microtasks (emit → handler → epoch → refreshServerSide → _getRows)
+        // can block the main thread indefinitely.
+        setTimeout(() => this._emitBatch(batch), 0);
+    }
+
+    _emitBatch(batch) {
+        if (this._disposed) return;
 
         const promises = [];
         try {
