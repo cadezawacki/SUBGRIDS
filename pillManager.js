@@ -488,10 +488,12 @@ export default class PillManager {
     }
 
     _fanoutEngineDirty(changes) {
+        const cc = changes?.colsChanged;
+        if (!cc || !Array.isArray(cc)) return;   // guard: true/null/undefined
         for (const pill of this.pills.values()) {
             if (!pill.columns) continue;
             const cols = ensure_list(pill.columns)
-            if (cols.some(c => changes.colsChanged.includes(c))) {
+            if (cols.some(c => cc.includes(c))) {
                 pill.update();
             }
         }
