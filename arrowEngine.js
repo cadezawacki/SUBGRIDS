@@ -6269,7 +6269,7 @@ export class ArrowAgGridAdapter {
         if (mergedUpdates.length) {
             const r = await this.applyServerUpdateTransaction(mergedUpdates, {
                 includeAllColumns,
-                commit: true,
+                commit,
                 freezeDerived,
                 emitAsEdit:emitAsEdit
             });
@@ -6427,9 +6427,13 @@ export class ArrowAgGridAdapter {
             applied++;
         }
 
-        // Build one AG update object per changed row, after all edits are applied
-        let colsWanted = includeAllColumns ? engine._fieldNames : this._projection;
-        colsWanted = colsWanted.filter(col => !col.startsWith('__temp'));
+        // Build one AG update object per changed row.
+        // Only include changed columns + ID to avoid expensive getCell calls
+        // for all projected columns (derived getters, etc.). The valueGetter
+        // reads from getCell() which checks overlays first, so AG Grid doesn't
+        // need the full row data — it just needs to know WHICH rows changed.
+        const changedColsArr = Array.from(changedCols);
+        const colsWanted = includeAllColumns ? engine._fieldNames : changedColsArr;
 
         const rowsForAg = [];
         if (changedRowsSet.size) {
