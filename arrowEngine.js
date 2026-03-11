@@ -2697,6 +2697,12 @@ export class ArrowEngine {
         let any = false;
         const rebuilt = [];
 
+        // Yield to the event loop between column rebuilds to keep the UI responsive.
+        const FRAME_BUDGET_MS = 8;
+        const _now = typeof performance !== 'undefined' && performance.now ? performance.now.bind(performance) : Date.now;
+        const _yield = () => new Promise(r => setTimeout(r, 0));
+        let frameStart = _now();
+
         for (let i = 0; i < physNames.length; i++) {
             const name = physNames[i];
             const vec = this._getVector(name);
@@ -2729,6 +2735,12 @@ export class ArrowEngine {
             columns[name] = builder.finish().toVector();
             rebuilt.push(name);
             any = true;
+
+            // Yield between columns if we've exceeded the frame budget
+            if ((_now() - frameStart) > FRAME_BUDGET_MS) {
+                await _yield();
+                frameStart = _now();
+            }
         }
 
         const newTable = any ? arrow.makeTable(columns) : this.table;
@@ -6221,9 +6233,10 @@ export class ArrowAgGridAdapter {
         if (mergedUpdates.length) {
             const r = await this.applyServerUpdateTransaction(mergedUpdates, {
                 includeAllColumns,
-                commit:true,
-                freezeDerived,
-                emitAsEdit:emitAsEdit
+                commit: false,        // Never force-materialize on server echo-back; overlays serve values
+                freezeDerived,        // correctly and the periodic auto-commit handles baking when density warrants.
+                emitAsEdit:emitAsEdit,
+                skipIfOverlaid: true, // Don't overwrite cells the user already edited with stale server echo
             });
             appliedUpd = r.applied | 0;
             skippedUpd = r.skipped | 0;
@@ -6273,7 +6286,8 @@ export class ArrowAgGridAdapter {
             freezeDerived = true,         // keep default freeze for editing computed w/o inverse
             emitAsEdit = false,
             checkRedraw = true,
-            callback = null
+            callback = null,
+            skipIfOverlaid = false,       // true → don't overwrite cells the user already edited (prevents stale echo-back)
         } = opts;
 
         const list = Array.isArray(updates) ? updates : (updates ? [updates] : []);
@@ -6313,6 +6327,8 @@ export class ArrowAgGridAdapter {
         const setOverlayValue = engine.setOverlayValue.bind(engine);
         const markFrozen = engine._markFrozen.bind(engine);
         const unfreezeDependents = engine._unfreezeDependentsOnChange.bind(engine);
+        const overlayHas = skipIfOverlaid ? engine._overlayHas.bind(engine) : null;
+        const overlays = skipIfOverlaid ? engine._overlays : null;
 
         const tracker = { changedCols, changedRows: changedRowsSet };
 
@@ -6370,6 +6386,11 @@ export class ArrowAgGridAdapter {
                 }
 
                 // PHYSICAL column path: silent overlay; unfreeze dependent derived cells
+                // Skip if the user already has a pending overlay (avoids stale server echo overwriting newer edits)
+                if (overlayHas) {
+                    const ov = overlays.get(col);
+                    if (ov && overlayHas(ov, rowIndex | 0)) continue;
+                }
                 setOverlayValue((rowIndex | 0), col, val, { bump: false });
                 unfreezeDependents(col, (rowIndex | 0));
                 changedCols.add(col);
