@@ -790,6 +790,8 @@ class ConnectionManager:
                 "micro_publish": self._handle_micro_publish,
                 "micro_subscribe": self._handle_micro_subscribe,
                 "micro_unsubscribe": self._handle_micro_unsubscribe,
+                # Redistribute proceeds
+                "redistribute": self._handle_redistribute,
             }
         dispatch = self._DISPATCH.get(action)
 
@@ -2030,6 +2032,75 @@ class ConnectionManager:
                 f"Execute failed: {e}",
                 toastType='error', toastTitle="Execute", toastId=tid, toastOptions={"persist": False}
             ))
+
+    # -------------------------------------------------------------------------
+    # Redistribute Proceeds
+    # -------------------------------------------------------------------------
+
+    async def _handle_redistribute(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        context_raw = d.get("context") or {}
+        room = context_raw.get("room")
+        grid_id = context_raw.get("grid_id")
+
+        if not room or not grid_id:
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": "Missing room or grid_id"},
+            })
+
+        try:
+            quick_context = RoomContext(room=room, grid_id=grid_id)
+            if quick_context.primary_keys is None:
+                quick_context.primary_keys = await query_primary_keys(grid_id)
+
+            actor = await self.grid_system.get_actor(quick_context, create_on_missing=False)
+        except Exception as e:
+            await log.error(f"[redistribute] actor lookup failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"No active grid: {e}"},
+            })
+
+        # Fetch the current grid frame with the columns we need
+        needed_cols = [
+            "grossSize", "refSkew", "refSkewPx", "refSkewSpd",
+            "ticker", "isin", "cusip", "description", "userSide", "QT",
+        ]
+        pk_cols = quick_context.primary_keys or []
+        fetch_cols = list(set(pk_cols + needed_cols))
+
+        try:
+            grid_frame = await self.grid_system.get_frame(quick_context, cols=fetch_cols)
+        except Exception as e:
+            await log.error(f"[redistribute] get_frame failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Failed to read grid data: {e}"},
+            })
+
+        # Call the processor
+        try:
+            from processRedistributeProceeds import process as redistribute_process
+            params = (d.get("data") or {}).get("params") or {}
+            result = await redistribute_process(grid_frame, pk_cols, params)
+        except Exception as e:
+            await log.error(f"[redistribute] process failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Redistribute calculation failed: {e}"},
+            })
+
+        # Send result back to the requesting client only
+        return await self._send_direct_message(websocket, {
+            "action": "redistribute",
+            "trace": trace,
+            "data": result,
+        })
 
     # -------------------------------------------------------------------------
     # Emit Loop (batch → sockets)

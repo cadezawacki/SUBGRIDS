@@ -12,6 +12,7 @@ import {writeObjectToClipboard, getVenueCopyColumns, mapVenueFromRfq} from '@/ut
 import {ArrowAgPivotAdapter} from '@/grids/js/arrow/arrowPivotEngine.js';
 import {asArray, wait} from "@/utils/helpers.js";
 import {ArrowAgGridAdapter} from "@/grids/js/arrow/arrowEngine.js";
+import {ACTION_MAP} from "@/actionMap.js";
 import interact from "interactjs";
 
 
@@ -99,6 +100,107 @@ export class PivotWidget extends BaseWidget {
         return v
     }
 
+    async _redistributeProceeds() {
+        const page = this.context.page;
+        const toast = page.toastManager();
+        const mm = page.modalManager();
+        const sm = page.subscriptionManager();
+        const socketManager = page.socketManager();
+
+        // Get room context from the raw portfolio message
+        const roomContext = page._ptRaw?.context;
+        if (!roomContext) {
+            toast.error('Redistribute', 'No active portfolio context.');
+            return;
+        }
+
+        toast.info('Proceeds Solver', 'Computing redistribution...');
+
+        try {
+            // Send redistribute action and wait for response
+            const response = await socketManager._sendWebSocketMessage({
+                action: ACTION_MAP.get('redistribute'),
+                context: {room: roomContext.room, grid_id: roomContext.grid_id},
+                data: {params: {}},
+            }, {wait: true, timeout: 15000});
+
+            const result = response?.data;
+            if (!result || result.error) {
+                toast.error('Redistribute', result?.error || 'Failed to compute redistribution.');
+                return;
+            }
+
+            const {summary, updates, stats} = result;
+            if (!summary || summary.length === 0) {
+                toast.info('Redistribute', 'No eligible rows for redistribution.');
+                return;
+            }
+
+            // Build summary table HTML
+            const displayCols = ['ticker', 'isin', 'description', 'grossSize', 'weight_pct', 'current_skew', 'proposed_skew', 'delta'];
+            const colLabels = {
+                ticker: 'Ticker', isin: 'ISIN', description: 'Description',
+                grossSize: 'Gross Size', weight_pct: 'Weight %',
+                current_skew: 'Current Skew', proposed_skew: 'Proposed Skew', delta: 'Delta'
+            };
+
+            // Filter to columns that actually exist in the data
+            const cols = displayCols.filter(c => summary[0].hasOwnProperty(c));
+
+            const headerRow = cols.map(c => `<th>${colLabels[c] || c}</th>`).join('');
+            const bodyRows = summary.map(row => {
+                const cells = cols.map(c => {
+                    let val = row[c];
+                    if (typeof val === 'number') val = val.toLocaleString(undefined, {maximumFractionDigits: 4});
+                    return `<td>${val ?? ''}</td>`;
+                }).join('');
+                return `<tr>${cells}</tr>`;
+            }).join('');
+
+            const statsHtml = `<div class="redist-stats" style="margin-bottom:10px;font-size:12px;color:var(--text-secondary, #aaa);">
+                <span><b>Rows:</b> ${stats.row_count}</span> &middot;
+                <span><b>Total Gross:</b> ${stats.total_gross?.toLocaleString()}</span> &middot;
+                <span><b>Uniform Skew:</b> ${stats.uniform_skew}</span> &middot;
+                <span><b>Column:</b> ${stats.skew_column}</span>
+            </div>`;
+
+            const tableHtml = `
+                <div class="redist-modal-body" style="max-height:60vh;overflow:auto;">
+                    ${statsHtml}
+                    <table class="redist-summary-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+                        <thead><tr style="border-bottom:1px solid var(--border-color, #444);text-align:left;">${headerRow}</tr></thead>
+                        <tbody>${bodyRows}</tbody>
+                    </table>
+                </div>`;
+
+            // Show modal with APPLY / CANCEL
+            const action = await mm.show({
+                title: 'Redistribute Proceeds',
+                body: tableHtml,
+                fields: null,
+                buttons: [
+                    {text: 'Cancel', value: 'cancel'},
+                    {text: 'Apply', value: 'apply', class: 'btn-primary'}
+                ],
+                modalBoxClass: 'pt-redistribute-modal'
+            });
+
+            if (action !== 'apply') return;
+
+            // Apply: publish the updates to the portfolio grid
+            const room = roomContext.room;
+            const meta = sm.buildPayloadContext(room, roomContext);
+            const data = sm.buildPayloadData(room, roomContext, updates);
+            await sm.publishMessage(room, meta, data);
+
+            toast.success('Proceeds Solver', `Applied redistribution to ${updates.length} rows.`);
+
+        } catch (err) {
+            console.error('[redistribute]', err);
+            toast.error('Redistribute', `Error: ${err.message || err}`);
+        }
+    }
+
     setupTooltips() {
         const flipLock = this.flipLock.bind(this);
         const lockState = () => this.context.page.page$.get('proceedsLocked');
@@ -122,12 +224,13 @@ export class PivotWidget extends BaseWidget {
             }
         });
 
+        const widget = this;
         this.context.page.tooltipManager().registerContextMenuItem({
             id: 'redistribute-proceeds',
             label: 'Redistribute Proceeds',
             icon: '',
             handler({tooltip}) {
-                toast.info('Proceeds Solver', 'Redistributing...');
+                widget._redistributeProceeds();
             }
         });
 
@@ -162,7 +265,7 @@ export class PivotWidget extends BaseWidget {
                 {id: 'btn-unlock-proceeds', label: 'Unlock', variant: 'portfolio', onClick: () => flipLock(false), closeOnClick: false},
                 {
                     id: 'btn-redist-proceeds', label: 'Redistribute', variant: 'portfolio', onClick: () => {
-                        toast.info('Proceeds Solver', 'Redistributing...')
+                        this._redistributeProceeds();
                     }, closeOnClick: false
                 },
             ],
