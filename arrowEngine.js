@@ -2684,34 +2684,78 @@ export class ArrowEngine {
         });
     }
 
-    async _materializeEdits({ commit = 'auto' } = {}) {
+    async _materializeEdits({ commit = 'auto', columns: scopeCols = null } = {}) {
+        // Reentrancy guard: if already materializing, queue this call and
+        // resolve when the current run finishes (it will drain the queue).
+        if (this._isMaterializing) {
+            return new Promise((resolve) => {
+                if (!this._materializeQueue) this._materializeQueue = [];
+                this._materializeQueue.push({ commit, scopeCols, resolve });
+            });
+        }
         this._isMaterializing = true;
 
+        try {
+            return this._materializeEditsInner(commit, scopeCols);
+        } finally {
+            // Drain queued requests: merge all pending scopes and run once more.
+            if (this._materializeQueue && this._materializeQueue.length) {
+                const queued = this._materializeQueue.splice(0);
+                // Merge: if ANY queued call wants commit:true, use true.
+                // Merge scope columns: union of all scoped columns (null = all).
+                let mergedCommit = commit;
+                let mergedScope = scopeCols ? new Set(scopeCols) : null;
+                for (let i = 0; i < queued.length; i++) {
+                    if (queued[i].commit === true) mergedCommit = true;
+                    if (!queued[i].scopeCols) { mergedScope = null; }
+                    else if (mergedScope) {
+                        for (const c of queued[i].scopeCols) mergedScope.add(c);
+                    }
+                }
+
+                try {
+                    const result = this._materializeEditsInner(mergedCommit, mergedScope);
+                    for (let i = 0; i < queued.length; i++) queued[i].resolve(result);
+                } catch (e) {
+                    for (let i = 0; i < queued.length; i++) queued[i].resolve(this.table);
+                } finally {
+                    this._isMaterializing = false;
+                }
+            } else {
+                this._isMaterializing = false;
+            }
+        }
+    }
+
+    /**
+     * Inner synchronous materialize — no awaits, no yielding, no reentrancy risk.
+     * @param {string|boolean} commit - 'auto'|true|false
+     * @param {Set|null} scopeCols - if provided, only rebuild these columns (others left as-is)
+     */
+    _materializeEditsInner(commit, scopeCols) {
         const n = this.numRows() | 0;
-        if (this._overlays.size === 0 || n === 0) { this._isMaterializing = false; return this.table; }
+        if (this._overlays.size === 0 || n === 0) return this.table;
 
         const physNames = this._fieldNames.filter(nm => this._nameToVector.has(nm));
-        if (physNames.length === 0) { this._isMaterializing = false; return this.table; }
+        if (physNames.length === 0) return this.table;
 
-        const columns = {};
+        const tableColumns = {};
         let any = false;
         const rebuilt = [];
-
-        // Yield to the event loop between column rebuilds to keep the UI responsive.
-        const FRAME_BUDGET_MS = 8;
-        const _now = typeof performance !== 'undefined' && performance.now ? performance.now.bind(performance) : Date.now;
-        const _yield = () => new Promise(r => setTimeout(r, 0));
-        let frameStart = _now();
 
         for (let i = 0; i < physNames.length; i++) {
             const name = physNames[i];
             const vec = this._getVector(name);
             const ov = this._overlays.get(name);
-            if (!ov || ov.size === 0) { columns[name] = vec; continue; }
+
+            // Skip columns not in scope (if scope is specified)
+            if (scopeCols && !scopeCols.has(name)) { tableColumns[name] = vec; continue; }
+
+            if (!ov || ov.size === 0) { tableColumns[name] = vec; continue; }
 
             const density = ov.size / Math.max(1, n);
             const should = (commit === true) || (commit !== false && density >= this._autoCommitThreshold);
-            if (!should) { columns[name] = vec; continue; }
+            if (!should) { tableColumns[name] = vec; continue; }
 
             const builder = arrow.makeBuilder({ type: vec.type, nullValues: [null, undefined] });
 
@@ -2732,18 +2776,12 @@ export class ArrowEngine {
                 }
             }
 
-            columns[name] = builder.finish().toVector();
+            tableColumns[name] = builder.finish().toVector();
             rebuilt.push(name);
             any = true;
-
-            // Yield between columns if we've exceeded the frame budget
-            if ((_now() - frameStart) > FRAME_BUDGET_MS) {
-                await _yield();
-                frameStart = _now();
-            }
         }
 
-        const newTable = any ? arrow.makeTable(columns) : this.table;
+        const newTable = any ? arrow.makeTable(tableColumns) : this.table;
 
         if (any && (commit === true || commit !== false)) {
             this.replaceTable(newTable);
@@ -2761,12 +2799,10 @@ export class ArrowEngine {
                 this._bumpColEpochByName(nm);
             }
             this._editCount = 0;
-            this._isMaterializing = false;
             return this.table;
         }
 
         this._editCount = 0;
-        this._isMaterializing = false;
         return newTable;
     }
 
@@ -6233,10 +6269,9 @@ export class ArrowAgGridAdapter {
         if (mergedUpdates.length) {
             const r = await this.applyServerUpdateTransaction(mergedUpdates, {
                 includeAllColumns,
-                commit: false,        // Never force-materialize on server echo-back; overlays serve values
-                freezeDerived,        // correctly and the periodic auto-commit handles baking when density warrants.
-                emitAsEdit:emitAsEdit,
-                skipIfOverlaid: true, // Don't overwrite cells the user already edited with stale server echo
+                commit: true,
+                freezeDerived,
+                emitAsEdit:emitAsEdit
             });
             appliedUpd = r.applied | 0;
             skippedUpd = r.skipped | 0;
@@ -6286,8 +6321,7 @@ export class ArrowAgGridAdapter {
             freezeDerived = true,         // keep default freeze for editing computed w/o inverse
             emitAsEdit = false,
             checkRedraw = true,
-            callback = null,
-            skipIfOverlaid = false,       // true → don't overwrite cells the user already edited (prevents stale echo-back)
+            callback = null
         } = opts;
 
         const list = Array.isArray(updates) ? updates : (updates ? [updates] : []);
@@ -6327,8 +6361,6 @@ export class ArrowAgGridAdapter {
         const setOverlayValue = engine.setOverlayValue.bind(engine);
         const markFrozen = engine._markFrozen.bind(engine);
         const unfreezeDependents = engine._unfreezeDependentsOnChange.bind(engine);
-        const overlayHas = skipIfOverlaid ? engine._overlayHas.bind(engine) : null;
-        const overlays = skipIfOverlaid ? engine._overlays : null;
 
         const tracker = { changedCols, changedRows: changedRowsSet };
 
@@ -6386,11 +6418,6 @@ export class ArrowAgGridAdapter {
                 }
 
                 // PHYSICAL column path: silent overlay; unfreeze dependent derived cells
-                // Skip if the user already has a pending overlay (avoids stale server echo overwriting newer edits)
-                if (overlayHas) {
-                    const ov = overlays.get(col);
-                    if (ov && overlayHas(ov, rowIndex | 0)) continue;
-                }
                 setOverlayValue((rowIndex | 0), col, val, { bump: false });
                 unfreezeDependents(col, (rowIndex | 0));
                 changedCols.add(col);
@@ -6426,9 +6453,9 @@ export class ArrowAgGridAdapter {
             });
         }
 
-        // Optional materialization (still a single commit)
+        // Optional materialization — scoped to only the columns that changed
         if ((commit === true) || (commit === 'auto')) {
-            try { await engine._materializeEdits({ commit }); } catch {}
+            try { await engine._materializeEdits({ commit, columns: changedCols.size ? changedCols : null }); } catch {}
         }
 
         // Emit a single coalesced epoch covering all changed rows/cols
