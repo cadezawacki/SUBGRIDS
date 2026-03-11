@@ -203,6 +203,24 @@ export class TreeColumnChooser {
             flex-direction: column;
             position: relative;
         `;
+
+        // Inject drag indicator styles
+        if (!document.getElementById('tree-drag-styles')) {
+            const style = document.createElement('style');
+            style.id = 'tree-drag-styles';
+            style.textContent = `
+                .tree-node.drag-over-top, .virtual-tree-node.drag-over-top {
+                    border-top: 2px solid var(--ag-range-selection-border-color, #2196F3) !important;
+                }
+                .tree-node.drag-over-bottom, .virtual-tree-node.drag-over-bottom {
+                    border-bottom: 2px solid var(--ag-range-selection-border-color, #2196F3) !important;
+                }
+                .drag-handle:hover { opacity: 0.8 !important; }
+                .tree-node[draggable="true"] { transition: opacity 0.15s; }
+            `;
+            document.head.appendChild(style);
+        }
+
         this.createHeader();
         this.createScrollContainer();
         // this.createFooter();
@@ -1238,6 +1256,33 @@ export class TreeColumnChooser {
         }
         this.updateFlattenedNodes();
         this.renderAllNodes();
+    }
+
+    _applyDragReorder(orderedNodes) {
+        if (!this.api) return;
+
+        // Build a full column order: pinned-left first, then center in new order, then pinned-right
+        const leftCols = [];
+        const centerCols = [];
+        const rightCols = [];
+
+        for (const node of orderedNodes) {
+            const col = this.api.getColumn(node.id);
+            if (!col) continue;
+            if (col.pinned === 'left') leftCols.push(node.id);
+            else if (col.pinned === 'right') rightCols.push(node.id);
+            else centerCols.push(node.id);
+        }
+
+        // Apply the reordered center columns using moveColumns
+        centerCols.forEach((colId, idx) => {
+            try { this.api.moveColumn(colId, leftCols.length + idx); } catch (_) {}
+        });
+
+        // Update sort column cache
+        this._updateSortColumns();
+        this.hasUnsavedChanges = true;
+        this._updateButtonStates();
     }
 
     _updateSortColumns() {
@@ -2383,6 +2428,10 @@ export class TreeColumnChooser {
         const element = document.createElement('div');
         element.className = 'tree-node';
         element.dataset.nodeId = node.id;
+        element.dataset.index = index;
+
+        const inFilterSelected = this._filterSelected;
+
         element.style.cssText = `
         height: 28px;
         display: flex;
@@ -2393,6 +2442,17 @@ export class TreeColumnChooser {
         user-select: none;
         box-sizing: border-box;
     `;
+
+        // Drag handle for filter-selected mode
+        if (inFilterSelected && !node.isGroup) {
+            element.draggable = true;
+            const dragHandle = document.createElement('span');
+            dragHandle.className = 'drag-handle';
+            dragHandle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24"><path fill="currentColor" d="M9 3h2v2H9zm4 0h2v2h-2zM9 7h2v2H9zm4 0h2v2h-2zM9 11h2v2H9zm4 0h2v2h-2zm-4 4h2v2H9zm4 0h2v2h-2zm-4 4h2v2H9zm4 0h2v2h-2z"/></svg>';
+            dragHandle.style.cssText = 'cursor:grab; opacity:0.4; margin-right:4px; flex-shrink:0; display:flex; align-items:center;';
+            dragHandle.title = 'Drag to reorder';
+            element.appendChild(dragHandle);
+        }
 
         const indent = document.createElement('div');
         indent.style.width = `${node.level * 20}px`;
@@ -2460,14 +2520,25 @@ export class TreeColumnChooser {
             const column = this.api?.getColumn(node.id);
 
             if (this.showPin && context.showPin !== false) {
-                const isPinned = column?.pinned === 'left';
+                const isPinnedLeft = column?.pinned === 'left';
                 const pinBtn = document.createElement('span');
-                pinBtn.className = `col-action-icon pin-icon ${isPinned ? 'active' : ''}`;
+                pinBtn.className = `col-action-icon pin-icon ${isPinnedLeft ? 'active' : ''}`;
                 pinBtn.dataset.colId = node.id;
                 pinBtn.dataset.iconType = 'pin';
                 pinBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 14 14"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M9.73 7.65L13 5.54A1 1 0 0 0 13.21 4L10 .79A1 1 0 0 0 8.46 1L6.3 4.23l-4.49 1a.6.6 0 0 0-.29 1l6.15 6.16a.61.61 0 0 0 1-.3ZM4.59 9.38L.5 13.5"/></svg>';
-                pinBtn.style.cssText = `cursor:pointer; padding:2px; opacity:${isPinned?'1':'0.5'}; transition:opacity 0.2s;`;
+                pinBtn.style.cssText = `cursor:pointer; padding:2px; opacity:${isPinnedLeft?'1':'0.5'}; transition:opacity 0.2s;`;
+                pinBtn.title = 'Pin Left';
                 iconsContainer.appendChild(pinBtn);
+
+                const isPinnedRight = column?.pinned === 'right';
+                const pinRightBtn = document.createElement('span');
+                pinRightBtn.className = `col-action-icon pin-right-icon ${isPinnedRight ? 'active' : ''}`;
+                pinRightBtn.dataset.colId = node.id;
+                pinRightBtn.dataset.iconType = 'pin-right';
+                pinRightBtn.innerHTML = '<svg width="13" height="13" viewBox="0 0 14 14" style="transform:scaleX(-1)"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M9.73 7.65L13 5.54A1 1 0 0 0 13.21 4L10 .79A1 1 0 0 0 8.46 1L6.3 4.23l-4.49 1a.6.6 0 0 0-.29 1l6.15 6.16a.61.61 0 0 0 1-.3ZM4.59 9.38L.5 13.5"/></svg>';
+                pinRightBtn.style.cssText = `cursor:pointer; padding:2px; opacity:${isPinnedRight?'1':'0.5'}; transition:opacity 0.2s;`;
+                pinRightBtn.title = 'Pin Right';
+                iconsContainer.appendChild(pinRightBtn);
             }
 
             if (this.showLock && context.showLock !== false) {
@@ -2553,21 +2624,115 @@ export class TreeColumnChooser {
             this.handleNodeSelection(node, checkbox.checked);
         };
 
+        // Drag-to-reorder in filter selected mode
+        let dragSrcIndex = null;
+
+        const dragStartHandler = (e) => {
+            if (!this._filterSelected) return;
+            const row = e.target.closest('.tree-node, .virtual-tree-node');
+            if (!row) return;
+            dragSrcIndex = parseInt(row.dataset.index, 10);
+            row.style.opacity = '0.4';
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', row.dataset.nodeId);
+        };
+
+        const dragOverHandler = (e) => {
+            if (!this._filterSelected || dragSrcIndex == null) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const row = e.target.closest('.tree-node, .virtual-tree-node');
+            if (row) {
+                // Clear previous indicators
+                this.virtualContainer.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                    el.classList.remove('drag-over-top', 'drag-over-bottom');
+                });
+                const rect = row.getBoundingClientRect();
+                const midY = rect.top + rect.height / 2;
+                if (e.clientY < midY) {
+                    row.classList.add('drag-over-top');
+                } else {
+                    row.classList.add('drag-over-bottom');
+                }
+            }
+        };
+
+        const dragLeaveHandler = (e) => {
+            const row = e.target.closest('.tree-node, .virtual-tree-node');
+            if (row) {
+                row.classList.remove('drag-over-top', 'drag-over-bottom');
+            }
+        };
+
+        const dropHandler = (e) => {
+            e.preventDefault();
+            if (!this._filterSelected || dragSrcIndex == null) return;
+
+            // Clear all drag indicators
+            this.virtualContainer.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                el.style.opacity = '';
+                el.classList.remove('drag-over-top', 'drag-over-bottom');
+            });
+
+            const row = e.target.closest('.tree-node, .virtual-tree-node');
+            if (!row) { dragSrcIndex = null; return; }
+
+            let dropIndex = parseInt(row.dataset.index, 10);
+            if (isNaN(dropIndex) || dropIndex === dragSrcIndex) { dragSrcIndex = null; return; }
+
+            // Determine if dropping above or below based on mouse position
+            const rect = row.getBoundingClientRect();
+            const midY = rect.top + rect.height / 2;
+            if (e.clientY > midY) dropIndex += 1;
+
+            // Reorder flattenedNodes
+            const nodes = this.flattenedNodes;
+            const [moved] = nodes.splice(dragSrcIndex, 1);
+            const insertAt = dropIndex > dragSrcIndex ? dropIndex - 1 : dropIndex;
+            nodes.splice(insertAt, 0, moved);
+
+            // Apply the new order to AG-Grid
+            this._applyDragReorder(nodes);
+
+            dragSrcIndex = null;
+            this.renderAllNodes();
+        };
+
+        const dragEndHandler = (e) => {
+            // Reset opacity on the dragged element
+            const row = e.target.closest('.tree-node, .virtual-tree-node');
+            if (row) row.style.opacity = '';
+            this.virtualContainer.querySelectorAll('.drag-over-top, .drag-over-bottom').forEach(el => {
+                el.classList.remove('drag-over-top', 'drag-over-bottom');
+            });
+            dragSrcIndex = null;
+        };
+
         this._delegatedHandlers.click = clickHandler;
         this._delegatedHandlers.change = changeHandler;
+        this._delegatedHandlers.dragstart = dragStartHandler;
+        this._delegatedHandlers.dragover = dragOverHandler;
+        this._delegatedHandlers.dragleave = dragLeaveHandler;
+        this._delegatedHandlers.drop = dropHandler;
+        this._delegatedHandlers.dragend = dragEndHandler;
 
         this.virtualContainer.addEventListener('click', clickHandler);
         this.virtualContainer.addEventListener('change', changeHandler);
+        this.virtualContainer.addEventListener('dragstart', dragStartHandler);
+        this.virtualContainer.addEventListener('dragover', dragOverHandler);
+        this.virtualContainer.addEventListener('dragleave', dragLeaveHandler);
+        this.virtualContainer.addEventListener('drop', dropHandler);
+        this.virtualContainer.addEventListener('dragend', dragEndHandler);
     }
 
     _unbindDelegatedEvents() {
         if (!this.virtualContainer) return;
-        if (this._delegatedHandlers.click) {
-            this.virtualContainer.removeEventListener('click', this._delegatedHandlers.click);
-        }
-        if (this._delegatedHandlers.change) {
-            this.virtualContainer.removeEventListener('change', this._delegatedHandlers.change);
-        }
+        const events = ['click', 'change', 'dragstart', 'dragover', 'dragleave', 'drop', 'dragend'];
+        events.forEach(evt => {
+            if (this._delegatedHandlers[evt]) {
+                this.virtualContainer.removeEventListener(evt, this._delegatedHandlers[evt]);
+            }
+        });
         this._delegatedHandlers = {};
     }
 
@@ -2942,11 +3107,17 @@ export class TreeColumnChooser {
         const context = colDef?.context || {};
         const column = this.api?.getColumn(node.id);
 
-        // Pin icon
+        // Pin left icon
         if (context.showPin !== false) {
-            const isPinned = column?.pinned === 'left';
-            const pinIcon = this.createIcon('pin', isPinned, node.id);
+            const isPinnedLeft = column?.pinned === 'left';
+            const pinIcon = this.createIcon('pin', isPinnedLeft, node.id);
+            pinIcon.title = 'Pin Left';
             container.appendChild(pinIcon);
+
+            const isPinnedRight = column?.pinned === 'right';
+            const pinRightIcon = this.createIcon('pin-right', isPinnedRight, node.id);
+            pinRightIcon.title = 'Pin Right';
+            container.appendChild(pinRightIcon);
         }
 
         // Lock icon
@@ -2987,6 +3158,7 @@ export class TreeColumnChooser {
         // Icon SVGs
         const icons = {
             pin: '<svg width="13" height="13" viewBox="0 0 14 14"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M9.73 7.65L13 5.54A1 1 0 0 0 13.21 4L10 .79A1 1 0 0 0 8.46 1L6.3 4.23l-4.49 1a.6.6 0 0 0-.29 1l6.15 6.16a.61.61 0 0 0 1-.3ZM4.59 9.38L.5 13.5"/></svg>',
+            'pin-right': '<svg width="13" height="13" viewBox="0 0 14 14" style="transform:scaleX(-1)"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" d="M9.73 7.65L13 5.54A1 1 0 0 0 13.21 4L10 .79A1 1 0 0 0 8.46 1L6.3 4.23l-4.49 1a.6.6 0 0 0-.29 1l6.15 6.16a.61.61 0 0 0 1-.3ZM4.59 9.38L.5 13.5"/></svg>',
             lock: '<svg width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M6 22q-.825 0-1.412-.587T4 20V10q0-.825.588-1.412T6 8h1V6q0-2.075 1.463-3.537T12 1t3.538 1.463T17 6v2h1q.825 0 1.413.588T20 10v10q0 .825-.587 1.413T18 22zm6-5q.825 0 1.413-.587T14 15t-.587-1.412T12 13t-1.412.588T10 15t.588 1.413T12 17M9 8h6V6q0-1.25-.875-2.125T12 3t-2.125.875T9 6z"/></svg>',
             info: '<svg width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M12 17q.425 0 .713-.288T13 16v-4q0-.425-.288-.712T12 11t-.712.288T11 12v4q0 .425.288.713T12 17m0-8q.425 0 .713-.288T13 8t-.288-.712T12 7t-.712.288T11 8t.288.713T12 9m0 13q-2.075 0-3.9-.788t-3.175-2.137T2.788 15.9T2 12t.788-3.9t2.137-3.175T8.1 2.788T12 2t3.9.788t3.175 2.137T21.213 8.1T22 12t-.788 3.9t-2.137 3.175t-3.175 2.138T12 22"/></svg>'
         };
@@ -3007,12 +3179,20 @@ export class TreeColumnChooser {
             const column = this.api.getColumn(node.id);
             if (!column) return;
 
-            // Update pin icon
+            // Update pin left icon
             const pinIcon = element.querySelector('.pin-icon');
-            if (pinIcon && column?.pinned) {
-                const isPinned = column?.pinned === 'left';
-                pinIcon.classList.toggle('active', isPinned);
-                pinIcon.style.opacity = isPinned ? '1' : '0.5';
+            if (pinIcon) {
+                const isPinnedLeft = column?.pinned === 'left';
+                pinIcon.classList.toggle('active', isPinnedLeft);
+                pinIcon.style.opacity = isPinnedLeft ? '1' : '0.5';
+            }
+
+            // Update pin right icon
+            const pinRightIcon = element.querySelector('.pin-right-icon');
+            if (pinRightIcon) {
+                const isPinnedRight = column?.pinned === 'right';
+                pinRightIcon.classList.toggle('active', isPinnedRight);
+                pinRightIcon.style.opacity = isPinnedRight ? '1' : '0.5';
             }
 
             // Update lock icon
@@ -3324,6 +3504,9 @@ export class TreeColumnChooser {
             case 'pin':
                 this.togglePin(column, iconElement);
                 break;
+            case 'pin-right':
+                this.togglePinRight(column, iconElement);
+                break;
             case 'lock':
                 this.toggleLock(column, iconElement);
                 break;
@@ -3347,6 +3530,40 @@ export class TreeColumnChooser {
         } else {
             this.pinnedColumns.delete(column.getColId());
             iconElement.style.opacity = '0.5';
+        }
+
+        // Update sibling pin-right icon if present
+        const row = iconElement.closest('.tree-node, .virtual-tree-node');
+        const pinRightIcon = row?.querySelector('.pin-right-icon');
+        if (pinRightIcon && newPin === 'left') {
+            pinRightIcon.classList.remove('active');
+            pinRightIcon.style.opacity = '0.5';
+        }
+    }
+
+    togglePinRight(column, iconElement) {
+        if (!column) return;
+
+        const currentPin = column?.pinned;
+        const newPin = currentPin === 'right' ? null : 'right';
+
+        this.api.setColumnPinned(column.getColId(), newPin);
+
+        if (newPin) {
+            iconElement.classList.add('active');
+            iconElement.style.opacity = '1';
+        } else {
+            iconElement.classList.remove('active');
+            iconElement.style.opacity = '0.5';
+        }
+
+        // Update sibling pin-left icon if present
+        const row = iconElement.closest('.tree-node, .virtual-tree-node');
+        const pinIcon = row?.querySelector('.pin-icon');
+        if (pinIcon && newPin === 'right') {
+            pinIcon.classList.remove('active');
+            pinIcon.style.opacity = '0.5';
+            this.pinnedColumns.delete(column.getColId());
         }
     }
 
