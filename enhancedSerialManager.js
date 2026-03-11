@@ -45,16 +45,22 @@ export class SerialManager {
     }
 
     serializeMessage(message) {
-        const enc = this.encode(message);
+        let enc;
         try {
-            if (!this._zstdReady) {
-                console.error('zstd NOT READY.')
+            enc = this.encode(message);
+        } catch (e) {
+            console.error('SerialManager encode failed:', e);
+            return null;
+        }
+        try {
+            if (!this._zstdReady || enc.byteLength > 4_194_304) {
+                // Skip compression if zstd not ready or payload > 4MB
+                // (large payloads can exhaust WASM heap)
                 return enc;
             }
-            const comp = this.ZstdStream.compress(enc, this.compressLevel);
-            return comp
+            return this.ZstdStream.compress(enc, this.compressLevel);
         } catch(e) {
-            console.error(e)
+            console.error('SerialManager compress failed:', e)
             return enc;
         }
     }
@@ -66,26 +72,40 @@ export class SerialManager {
             if (!payload) throw Error(`Invalid message: ${message}`);
             const decompressed = await this.decompress(payload);
             return await this.decode(decompressed);
-        }).then(msg=>{console.log(msg); return msg}).catch((e) => {console.error(e)});
+        }).catch((e) => {console.error('SerialManager deserialize failed:', e)});
     }
 
     async decompress(payload) {
         if (!this._zstdReady) {
             await this._zstdPromise;
         }
-        const isZ = this.isZstd(payload);
 
-        if (!isZ && this.isArrayBuffer(payload)) {
-            const _payload =  new Uint8Array(payload)
-            if (this.isZstd(_payload)) return this.ZstdStream.decompress(_payload)
+        // Normalize ArrayBuffer to Uint8Array so isZstd/decompress work uniformly
+        if (this.isArrayBuffer(payload)) {
+            payload = new Uint8Array(payload);
         }
 
-        return isZ ? this.ZstdStream.decompress(payload) : payload
+        if (!this.isZstd(payload)) return payload;
+
+        // Guard against decompressing excessively large payloads in WASM
+        const len = payload.byteLength || payload.length || 0;
+        if (len > 8_388_608) {
+            console.warn('SerialManager: skipping zstd decompress, payload too large:', len);
+            return payload;
+        }
+
+        return this.ZstdStream.decompress(payload);
     }
 
     compress(payload, level=this.compressLevel) {
-        if (payload.length < 100 || !this._zstdReady) return payload;
-        return this.ZstdStream.compress(payload, level);
+        const len = payload.byteLength || payload.length || 0;
+        if (len < 100 || !this._zstdReady || len > 4_194_304) return payload;
+        try {
+            return this.ZstdStream.compress(payload, level);
+        } catch (e) {
+            console.error('SerialManager compress failed:', e);
+            return payload;
+        }
     }
 
     encode(payload) {
