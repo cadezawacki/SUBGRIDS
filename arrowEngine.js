@@ -1051,7 +1051,7 @@ export class ArrowEngine {
         this._classCache = new LRUCache(cacheSz);
         this._fmtCache = new LRUCache(cacheSz);
 
-        this._frozenOverrides = new Set();
+        this._frozenOverrides = new Map();  // Map<colName, Set<rowIndex>> — fast freeze/unfreeze without string concat
         this._idxMinMax = new Map();
         this._indexBlockSize = 2048;
 
@@ -2178,9 +2178,11 @@ export class ArrowEngine {
         if (ops.length === 0) return tracker;
 
         const suppressEditSignals = opts?.suppressEditSignals === true;
+        const deferUnfreeze = opts?.deferUnfreeze === true;
 
         const changedCols = tracker.changedCols || (tracker.changedCols = new Set());
         const changedRows = tracker.changedRows || (tracker.changedRows = new Set());
+        const physicalCols = deferUnfreeze ? (tracker.physicalCols || (tracker.physicalCols = new Set())) : null;
 
         const ri = (rowIndex | 0);
         let broadcasted = false;
@@ -2210,7 +2212,10 @@ export class ArrowEngine {
                 }
                 changedCols.add(col);
                 changedRows.add(ri);
-                if (isPhysical) this._unfreezeDependentsOnChange(col, ri);
+                if (isPhysical) {
+                    if (deferUnfreeze) physicalCols.add(col);
+                    else this._unfreezeDependentsOnChange(col, ri);
+                }
                 continue;
             }
 
@@ -2230,9 +2235,13 @@ export class ArrowEngine {
 
             const ov = this._ensureOverlay(col);
             this._overlaySet(ov, ri, value);
-            this._unfreezeDependentsOnChange(col, ri);
             changedCols.add(col);
             changedRows.add(ri);
+
+            if (isPhysical) {
+                if (deferUnfreeze) physicalCols.add(col);
+                else this._unfreezeDependentsOnChange(col, ri);
+            }
 
             try {
                 if (!suppressEditSignals) {
@@ -2247,25 +2256,31 @@ export class ArrowEngine {
     }
 
     /* --------------------------- freeze / unfreeze --------------------------- */
-    _markFrozen(name, rowIndex){ this._frozenOverrides.add(`${name}::${rowIndex|0}`); }
-    _isFrozen(name, rowIndex){ return this._frozenOverrides.has(`${name}::${rowIndex|0}`); }
+    _markFrozen(name, rowIndex){
+        let set = this._frozenOverrides.get(name);
+        if (!set) { set = new Set(); this._frozenOverrides.set(name, set); }
+        set.add(rowIndex | 0);
+    }
+    _isFrozen(name, rowIndex){
+        const set = this._frozenOverrides.get(name);
+        return set ? set.has(rowIndex | 0) : false;
+    }
     _unfreeze(name, rowIndex){
-        const k = `${name}::${rowIndex|0}`;
-        if (this._frozenOverrides.delete(k)){
-            this.clearOverlayValue(rowIndex|0, name);
-            this._bumpCellEpochByName(rowIndex|0, name);
+        const set = this._frozenOverrides.get(name);
+        if (set && set.delete(rowIndex | 0)) {
+            if (set.size === 0) this._frozenOverrides.delete(name);
+            this.clearOverlayValue(rowIndex | 0, name, { bump: false });
+            this._bumpCellEpochByName(rowIndex | 0, name);
         }
     }
     _unfreezeAllFrozenFor(name){
-        if (this._frozenOverrides.size === 0) return;
-        const prefix = name + '::';
-        const toClear = [];
-        for (const key of this._frozenOverrides) if (key.startsWith(prefix)) toClear.push(key);
-        for (let i=0;i<toClear.length;i++){
-            const k = toClear[i]; this._frozenOverrides.delete(k);
-            const ri = _toInt32(k.slice(prefix.length));
-            this.clearOverlayValue(ri, name);
-            this._bumpCellEpochByName(ri, name);
+        const set = this._frozenOverrides.get(name);
+        if (!set || set.size === 0) return;
+        const rows = Array.from(set);
+        this._frozenOverrides.delete(name);
+        for (let i = 0; i < rows.length; i++) {
+            this.clearOverlayValue(rows[i], name, { bump: false });
+            this._bumpCellEpochByName(rows[i], name);
         }
     }
     _freeAllFrozen({ trimToRowCount = null, trimUnknownColumns = true, clearOverlays = false, bump = false, clearAll = false } = {}){
@@ -2276,33 +2291,16 @@ export class ArrowEngine {
 
         // Optional "nuke" mode (off by default).
         if (clearAll === true) {
-            const removed = frozen.size | 0;
-
+            let removed = 0;
             if (clearOverlays) {
-                // Group by column to reduce overlay structure lookups.
-                const perCol = new Map();
-                for (const key of frozen) {
-                    if (typeof key !== 'string') continue;
-                    const p = key.lastIndexOf('::');
-                    if (p <= 0) continue;
-                    const col = key.slice(0, p);
-                    const tail = key.slice(p + 2);
-                    const ri = (tail | 0);
-                    if (tail !== String(ri)) continue;
-                    let arr = perCol.get(col);
-                    if (!arr) { arr = []; perCol.set(col, arr); }
-                    arr.push(ri);
-                }
-
-                for (const [col, arr] of perCol.entries()) {
+                for (const [col, rowSet] of frozen) {
                     const ov = this._overlays.get(col);
-                    if (!ov || !arr || arr.length === 0) continue;
-
+                    if (!ov || !rowSet || rowSet.size === 0) { removed += rowSet ? rowSet.size : 0; continue; }
+                    removed += rowSet.size;
                     if (ov.kind === 'number') {
                         const mask = ov.mask;
                         if (!mask) continue;
-                        for (let i = 0; i < arr.length; i++) {
-                            const ri = arr[i] | 0;
+                        for (const ri of rowSet) {
                             const prev = mask[ri] | 0;
                             if (prev !== MASK_NONE) { mask[ri] = MASK_NONE; ov.size--; }
                         }
@@ -2310,69 +2308,61 @@ export class ArrowEngine {
                     } else {
                         const mp = ov.map;
                         if (!mp) continue;
-                        for (let i = 0; i < arr.length; i++) {
-                            if (mp.delete(arr[i] | 0)) ov.size--;
+                        for (const ri of rowSet) {
+                            if (mp.delete(ri)) ov.size--;
                         }
                         if (ov.size < 0) ov.size = 0;
                     }
                 }
+            } else {
+                for (const [, rowSet] of frozen) removed += rowSet ? rowSet.size : 0;
             }
-
             frozen.clear();
             if (bump) this._emitEpochChange({ rowsChanged: true, colsChanged: true });
             return removed;
         }
 
         let removed = 0;
-
         const hasVec = this._nameToVector;
         const hasDer = this._derived;
         const hasDef = this.columnDefs;
+        const colsToDelete = [];
 
-        // Trim in-place; Set deletion during iteration is safe.
-        for (const key of frozen) {
-            let drop = false;
-
-            if (typeof key !== 'string') {
-                drop = true;
-            } else {
-                const p = key.lastIndexOf('::');
-                if (p <= 0) {
-                    drop = true;
-                } else {
-                    const col = key.slice(0, p);
-                    const tail = key.slice(p + 2);
-                    const ri = (tail | 0);
-
-                    // Reject malformed row indices (prevents accidental ri=0 from garbage).
-                    if (tail !== String(ri)) drop = true;
-                    else if (n >= 0 && (ri < 0 || ri >= n)) drop = true;
-                    else if (trimUnknownColumns === true && !(hasVec.has(col) || hasDer.has(col) || hasDef.has(col))) drop = true;
-
-                    if (drop && clearOverlays === true) {
-                        const ov = this._overlays.get(col);
-                        if (ov) {
-                            if (ov.kind === 'number') {
-                                const mask = ov.mask;
-                                if (mask) {
-                                    const prev = mask[ri] | 0;
-                                    if (prev !== MASK_NONE) { mask[ri] = MASK_NONE; ov.size--; if (ov.size < 0) ov.size = 0; }
-                                }
-                            } else {
-                                const mp = ov.map;
-                                if (mp && mp.delete(ri)) { ov.size--; if (ov.size < 0) ov.size = 0; }
-                            }
-                        }
+        for (const [col, rowSet] of frozen) {
+            // Check if entire column should be dropped
+            if (trimUnknownColumns === true && !(hasVec.has(col) || hasDer.has(col) || hasDef.has(col))) {
+                if (clearOverlays) {
+                    const ov = this._overlays.get(col);
+                    if (ov) {
+                        for (const ri of rowSet) this._overlaySet(ov, ri, undefined);
                     }
                 }
+                removed += rowSet.size;
+                colsToDelete.push(col);
+                continue;
             }
 
-            if (drop) {
-                frozen.delete(key);
-                removed++;
+            // Trim out-of-bounds rows within the column
+            if (n >= 0) {
+                const badRows = [];
+                for (const ri of rowSet) {
+                    if (ri < 0 || ri >= n) badRows.push(ri);
+                }
+                if (badRows.length > 0) {
+                    for (let i = 0; i < badRows.length; i++) {
+                        rowSet.delete(badRows[i]);
+                        if (clearOverlays) {
+                            const ov = this._overlays.get(col);
+                            if (ov) this._overlaySet(ov, badRows[i], undefined);
+                        }
+                    }
+                    removed += badRows.length;
+                    if (rowSet.size === 0) colsToDelete.push(col);
+                }
             }
         }
 
+        for (let i = 0; i < colsToDelete.length; i++) frozen.delete(colsToDelete[i]);
         if (removed && bump) this._emitEpochChange({ rowsChanged: true, colsChanged: true });
         return removed;
     }
@@ -2388,6 +2378,46 @@ export class ArrowEngine {
                 if (this._isFrozen(d, rowIndex)) this._unfreeze(d, rowIndex);
             }
         }
+    }
+
+    /**
+     * Batch-unfreeze all derived dependents for a set of physical columns and rows.
+     * Unlike _unfreezeDependentsOnChange (which is called per-column per-row and emits
+     * per-cell epoch bumps), this method:
+     *   1. Computes the union of all derived dependents ONCE
+     *   2. Clears frozen overlays in bulk WITHOUT individual epoch bumps
+     *   3. Caller is responsible for emitting ONE coalesced epoch afterward
+     *
+     * This eliminates O(cols × rows × deps) string-concat + epoch-bump overhead.
+     */
+    _batchUnfreezeDependents(physicalCols, rowIndices) {
+        if (this._frozenOverrides.size === 0) return;
+
+        // Collect the union of all derived dependents across all changed physical cols
+        const derivedDeps = new Set();
+        for (const col of physicalCols) {
+            const deps = this.getDependentsClosure(col) || [];
+            for (let i = 0; i < deps.length; i++) {
+                if (this._derived.has(deps[i])) derivedDeps.add(deps[i]);
+            }
+        }
+        if (derivedDeps.size === 0) return;
+
+        // For each derived dependent, unfreeze affected rows without epoch bumps
+        for (const dep of derivedDeps) {
+            const frozenSet = this._frozenOverrides.get(dep);
+            if (!frozenSet || frozenSet.size === 0) continue;
+
+            const ov = this._overlays.get(dep);
+            for (const ri of rowIndices) {
+                if (frozenSet.delete(ri)) {
+                    // Clear overlay inline (skip clearOverlayValue overhead)
+                    if (ov) this._overlaySet(ov, ri, undefined);
+                }
+            }
+            if (frozenSet.size === 0) this._frozenOverrides.delete(dep);
+        }
+        // NO epoch bumps — caller emits one coalesced epoch
     }
 
     /* ----------------------------- derived columns --------------------------- */
@@ -3086,19 +3116,15 @@ export class ArrowEngine {
             // ---- frozen snapshot ----
             if (this._frozenOverrides && this._frozenOverrides.size) {
                 const snap = new Map();
-                for (const key of this._frozenOverrides) {
-                    if (typeof key !== 'string') continue;
-                    const p = key.lastIndexOf('::');
-                    if (p <= 0) continue;
-
-                    const col = key.slice(0, p);
-                    const ri = (key.slice(p + 2) | 0);
-                    if (ri < 0 || ri >= before) continue;
-
-                    const rowId = String(this.getRowIdByIndex(ri));
-                    let set = snap.get(col);
-                    if (!set) { set = new Set(); snap.set(col, set); }
-                    set.add(rowId);
+                for (const [col, rowSet] of this._frozenOverrides) {
+                    if (!rowSet || rowSet.size === 0) continue;
+                    let idSet = snap.get(col);
+                    if (!idSet) { idSet = new Set(); snap.set(col, idSet); }
+                    for (const ri of rowSet) {
+                        if (ri < 0 || ri >= before) continue;
+                        idSet.add(String(this.getRowIdByIndex(ri)));
+                    }
+                    if (idSet.size === 0) snap.delete(col);
                 }
                 if (snap.size) frozenById = snap;
             }
@@ -3152,13 +3178,16 @@ export class ArrowEngine {
 
             // Restore frozen flags by rowId
             if (frozenById && frozenById.size && this._frozenOverrides) {
-                for (const [col, set] of frozenById.entries()) {
-                    if (!set || set.size === 0) continue;
-                    for (const rowId of set.values()) {
+                for (const [col, idSet] of frozenById.entries()) {
+                    if (!idSet || idSet.size === 0) continue;
+                    let rowSet = this._frozenOverrides.get(col);
+                    if (!rowSet) { rowSet = new Set(); this._frozenOverrides.set(col, rowSet); }
+                    for (const rowId of idSet.values()) {
                         const ri = this.getRowIndexById(rowId);
                         if (ri < 0) continue;
-                        this._frozenOverrides.add(`${col}::${ri | 0}`);
+                        rowSet.add(ri | 0);
                     }
+                    if (rowSet.size === 0) this._frozenOverrides.delete(col);
                 }
             }
         } else {
@@ -6332,6 +6361,7 @@ export class ArrowAgGridAdapter {
         // Track coalesced changes
         const changedCols = new Set();
         const changedRowsSet = new Set();
+        const physicalColsChanged = new Set();  // physical cols that need deferred dependent unfreeze
 
         let applied = 0, skipped = 0;
 
@@ -6354,20 +6384,26 @@ export class ArrowAgGridAdapter {
         }
         if (rowWorkMap.size === 0) return { applied: 0, skipped };
 
-        // Pre-bind frequently used internals to avoid hot-loop prototype lookups
-        const isDerived = engine._isDerived.bind(engine);
-        const getDerived = engine._getDerived.bind(engine);
-        const getRowObject = engine.getRowObject.bind(engine);
-        const setOverlayValue = engine.setOverlayValue.bind(engine);
-        const markFrozen = engine._markFrozen.bind(engine);
-        const unfreezeDependents = engine._unfreezeDependentsOnChange.bind(engine);
+        // Pre-cache overlay structures for columns we'll touch repeatedly.
+        // Calling _ensureOverlay once per column instead of per-cell eliminates
+        // redundant normalize + type-detect overhead in hot loops.
+        const overlayCache = new Map();
+        const ensureOv = (col) => {
+            let ov = overlayCache.get(col);
+            if (ov === undefined) {
+                ov = engine._ensureOverlay(col);
+                overlayCache.set(col, ov || null);
+            }
+            return ov;
+        };
 
-        const tracker = { changedCols, changedRows: changedRowsSet };
+        const tracker = { changedCols, changedRows: changedRowsSet, physicalCols: physicalColsChanged };
 
         // Apply per row (fold multiple payloads targeting the same row)
         for (const [rowIndex, payloadsForRow] of rowWorkMap.entries()) {
+            const ri = rowIndex | 0;
             const merged = Object.create(null);
-            merged[idKey] = engine.getRowIdByIndex(rowIndex);
+            merged[idKey] = engine.getRowIdByIndex(ri);
 
             // Fold columns across payloads; last writer wins
             for (let p = 0; p < payloadsForRow.length; p++) {
@@ -6384,47 +6420,55 @@ export class ArrowAgGridAdapter {
             const cols = Object.keys(merged);
             for (let c = 0; c < cols.length; c++) {
                 const col = cols[c];
-                if (col === idKey) continue; // IMPORTANT: never treat rowId as an editable column
+                if (col === idKey) continue;
                 const val = merged[col];
 
                 // DERIVED column path
-                if (isDerived(col)) {
-                    const def = getDerived(col);
+                if (engine._derived.has(col)) {
+                    const def = engine._derived.get(col);
                     const inv = def && typeof def.inverse === 'function' ? def.inverse : null;
 
                     if (inv) {
                         let plan = null;
                         try {
                             const settingsFn = engine._settingsGetter ? engine._settingsGetter.get(col) : null;
-                            plan = inv((rowIndex | 0), val, engine, settingsFn ? settingsFn() : undefined);
-
-                            // If inverse is async, await it; otherwise applyEditPlanBatch will mis-handle a Promise
-                            if (plan && typeof plan.then === 'function') {
-                                plan = await plan;
-                            }
+                            plan = inv(ri, val, engine, settingsFn ? settingsFn() : undefined);
+                            if (plan && typeof plan.then === 'function') plan = await plan;
                         } catch {
                             plan = null;
                         }
-
-                        await engine._applyEditPlanBatch((rowIndex | 0), plan, tracker);
+                        // deferUnfreeze: physical cols in plan won't trigger per-cell unfreeze cascade
+                        await engine._applyEditPlanBatch(ri, plan, tracker, { deferUnfreeze: true });
                     } else {
-                        // No inverse: overlay + freeze (silent)
-                        setOverlayValue((rowIndex | 0), col, val, { bump: false });
-                        if (freezeDerived) markFrozen(col, (rowIndex | 0));
+                        // No inverse: overlay + freeze (silent, no epoch bump)
+                        const ov = ensureOv(col);
+                        if (ov) engine._overlaySet(ov, ri, val);
+                        if (freezeDerived) engine._markFrozen(col, ri);
                         changedCols.add(col);
-                        changedRowsSet.add((rowIndex | 0));
+                        changedRowsSet.add(ri);
                     }
                     continue;
                 }
 
-                // PHYSICAL column path: silent overlay; unfreeze dependent derived cells
-                setOverlayValue((rowIndex | 0), col, val, { bump: false });
-                unfreezeDependents(col, (rowIndex | 0));
+                // PHYSICAL column path: silent overlay, defer dependent unfreeze to end
+                const ov = ensureOv(col);
+                if (ov) engine._overlaySet(ov, ri, val);
+                physicalColsChanged.add(col);
                 changedCols.add(col);
-                changedRowsSet.add((rowIndex | 0));
+                changedRowsSet.add(ri);
             }
 
             applied++;
+        }
+
+        // ---- BATCH UNFREEZE ----
+        // Instead of calling _unfreezeDependentsOnChange per-column per-row (which
+        // triggers O(cols × rows × deps) string-concat + epoch bumps), we do ONE pass:
+        // compute the union of all derived dependents, then bulk-clear their frozen
+        // overlays without any individual epoch bumps. The single coalesced epoch
+        // below covers everything.
+        if (physicalColsChanged.size > 0) {
+            engine._batchUnfreezeDependents(physicalColsChanged, changedRowsSet);
         }
 
         // Build one AG update object per changed row.
@@ -6441,7 +6485,7 @@ export class ArrowAgGridAdapter {
             const it = changedRowsSet.values();
             for (let i = 0; i < totalRows; i++) {
                 const ri = (it.next().value | 0);
-                const obj = getRowObject(ri, colsWanted);
+                const obj = engine.getRowObject(ri, colsWanted);
                 obj[this._idxProperty] = ri;
                 obj[idKey] = engine.getRowIdByIndex(ri);
                 rowsForAg.push(obj);
