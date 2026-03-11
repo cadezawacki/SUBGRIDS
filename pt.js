@@ -35,7 +35,7 @@ import {EnhancedPayloadBatcher} from "@/global/enhancedPayloadBatcher.js";
 import {ArrowEngine, ArrowAgGridAdapter} from '@/grids/js/arrow/arrowEngine.js';
 import {virtualPortfolioColumns, realPortfolioColumns, generalPortfolioColumns} from '@/pt/js/grids/portfolio/portfolioColumns.js';
 import {SIG_FIGS_BY_QUOTE_TYPE} from '@/pt/js/grids/portfolioSigFigs.js';
-import {asyncMap, asyncForEach} from "modern-async";
+
 import PillManager from "@/global/js/pillManager.js";
 // import { ClientSummaryModal } from '@/grids/js/arrow/clientModal.js';
 
@@ -172,7 +172,8 @@ export class PortfolioPage extends PageBase {
             const metaData = adapter?._ptRaw?.context;
             const room = adapter.room;
 
-            const rows = await asyncMap(payloads, async (payload) => {
+            // Sync map — getRowObject is synchronous; asyncMap added needless Promise overhead per cell.
+            const rows = payloads.map((payload) => {
                 const { rowIndex, changes, engine } = payload;
                 const pks = engine.getRowObject(rowIndex, metaData.primary_keys);
                 return {...pks, ...changes};

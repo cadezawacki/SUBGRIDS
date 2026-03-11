@@ -347,7 +347,13 @@ export class EnhancedPayloadBatcher {
         for (let i = 0; i < rows.length; i++) {
             const row = rows[i];
             const key = JSON.stringify(pkCols.map(col => row[col]));
-            seen.set(key, row);
+            const existing = seen.get(key);
+            if (existing) {
+                // Merge: later writes win per-column, but earlier columns are preserved
+                Object.assign(existing, row);
+            } else {
+                seen.set(key, { ...row });
+            }
         }
         return Array.from(seen.values());
     }
