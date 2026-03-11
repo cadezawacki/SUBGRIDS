@@ -12,8 +12,14 @@ import {writeObjectToClipboard, getVenueCopyColumns, mapVenueFromRfq} from '@/ut
 import {ArrowAgPivotAdapter} from '@/grids/js/arrow/arrowPivotEngine.js';
 import {asArray, wait} from "@/utils/helpers.js";
 import {ArrowAgGridAdapter} from "@/grids/js/arrow/arrowEngine.js";
+import {ACTION_MAP} from "@/actionMap.js";
 import interact from "interactjs";
 
+function _escHtml(v) {
+    if (v == null) return '';
+    const s = typeof v === 'number' ? v.toLocaleString(undefined, {maximumFractionDigits: 4}) : String(v);
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
 //context, widgetId, manager, feederId, selector, config = {}
 export class PivotWidget extends BaseWidget {
@@ -99,6 +105,199 @@ export class PivotWidget extends BaseWidget {
         return v
     }
 
+    async _redistributeProceeds() {
+        if (this._redistInFlight) return;
+        this._redistInFlight = true;
+        this._redistStale = false;
+
+        const page = this.context.page;
+        const toast = page.toastManager();
+        const mm = page.modalManager();
+        const sm = page.subscriptionManager();
+        const socketManager = page.socketManager();
+
+        const roomContext = page._ptRaw?.context;
+        if (!roomContext) {
+            toast.error('Redistribute', 'No active portfolio context.');
+            this._redistInFlight = false;
+            return;
+        }
+
+        const portfolioRoom = roomContext.room;
+
+        // Track portfolio publishes to detect stale data
+        const onPortfolioPublish = () => { this._redistStale = true; };
+        sm.registerMessageHandler(portfolioRoom, 'publish', onPortfolioPublish);
+
+        const cleanup = () => {
+            sm.unregisterMessageHandler(portfolioRoom, 'publish', onPortfolioPublish);
+            this._redistInFlight = false;
+        };
+
+        toast.info('Proceeds Solver', 'Computing redistribution...');
+
+        try {
+            const result = await this._fetchRedistribution(socketManager, roomContext);
+            await this._showRedistributeModal(result, roomContext, {mm, sm, toast, esc: _escHtml, cleanup, onPortfolioPublish});
+        } catch (err) {
+            console.error('[redistribute]', err);
+            toast.error('Redistribute', `Error: ${err.message || err}`);
+            cleanup();
+        }
+    }
+
+    async _fetchRedistribution(socketManager, roomContext) {
+        const response = await socketManager._sendWebSocketMessage({
+            action: ACTION_MAP.get('redistribute'),
+            context: {room: roomContext.room, grid_id: roomContext.grid_id},
+            data: {params: {}},
+        }, {wait: true, timeout: 15000});
+        return response?.data;
+    }
+
+    async _showRedistributeModal(result, roomContext, {mm, sm, toast, esc, cleanup, onPortfolioPublish}) {
+        // Handle error responses in a modal rather than just a toast
+        if (!result || result.error) {
+            cleanup();
+            const errorMsg = result?.error || 'Failed to compute redistribution.';
+            await mm.show({
+                title: 'Redistribute Proceeds — Error',
+                body: `<div style="padding:12px;color:var(--danger, #e74c3c);">${esc(errorMsg)}</div>`,
+                fields: null,
+                buttons: [
+                    {text: 'Close', value: 'close'},
+                    {text: 'Re-run', value: 'rerun', class: 'btn-primary'}
+                ],
+                modalBoxClass: 'pt-redistribute-modal'
+            }).then(action => {
+                if (action === 'rerun') this._redistributeProceeds();
+            });
+            return;
+        }
+
+        const {summary, updates, stats, constraints_applied, constraints_relaxed} = result;
+        if (!summary || summary.length === 0) {
+            toast.info('Redistribute', 'No eligible rows for redistribution.');
+            cleanup();
+            return;
+        }
+
+        // Build table HTML
+        const displayCols = ['ticker', 'isin', 'description', 'grossSize', 'weight_pct', 'current_skew', 'proposed_skew', 'delta'];
+        const colLabels = {
+            ticker: 'Ticker', isin: 'ISIN', description: 'Description',
+            grossSize: 'Gross Size', weight_pct: 'Weight %',
+            current_skew: 'Current Skew', proposed_skew: 'Proposed Skew', delta: 'Delta'
+        };
+        const cols = displayCols.filter(c => summary[0]?.hasOwnProperty(c));
+
+        const headerRow = cols.map(c => `<th>${colLabels[c] || esc(c)}</th>`).join('');
+        const bodyRows = summary.map(row => {
+            const cells = cols.map(c => `<td>${esc(row[c])}</td>`).join('');
+            return `<tr>${cells}</tr>`;
+        }).join('');
+
+        let infoHtml = '';
+        if (constraints_applied) {
+            infoHtml += `<div style="margin-bottom:6px;padding:4px 8px;background:var(--info-bg, #1a3a4a);border-radius:4px;font-size:11px;color:var(--info-text, #8ad);">Filtered by AI Tickers microgrid patterns</div>`;
+        }
+        if (constraints_relaxed?.length) {
+            infoHtml += constraints_relaxed.map(msg =>
+                `<div style="margin-bottom:6px;padding:4px 8px;background:var(--warning-bg, #4a3a1a);border-radius:4px;font-size:11px;color:var(--warning-text, #da8);">${esc(msg)}</div>`
+            ).join('');
+        }
+
+        const statsHtml = `<div class="redist-stats" style="margin-bottom:10px;font-size:12px;color:var(--text-secondary, #aaa);">
+            <span><b>Rows:</b> ${esc(stats.row_count)}</span> &middot;
+            <span><b>Total Gross:</b> ${esc(stats.total_gross)}</span> &middot;
+            <span><b>Uniform Skew:</b> ${esc(stats.uniform_skew)}</span> &middot;
+            <span><b>Column:</b> ${esc(stats.skew_column)}</span>
+        </div>`;
+
+        const staleId = `redist-stale-${Date.now()}`;
+        const tableHtml = `
+            <div class="redist-modal-body" style="max-height:60vh;overflow:auto;">
+                ${infoHtml}
+                ${statsHtml}
+                <div id="${staleId}" style="display:none;margin-bottom:8px;padding:6px 10px;background:var(--danger-bg, #4a1a1a);border:1px solid var(--danger, #e74c3c);border-radius:4px;font-size:12px;color:var(--danger, #e74c3c);font-weight:600;">
+                    STALE — Portfolio data has changed since this was computed. Re-run recommended.
+                </div>
+                <table class="redist-summary-table" style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead><tr style="border-bottom:1px solid var(--border-color, #444);text-align:left;">${headerRow}</tr></thead>
+                    <tbody>${bodyRows}</tbody>
+                </table>
+            </div>`;
+
+        // Show modal — poll stale state to update banner while open
+        let staleCheckInterval = null;
+        const startStaleCheck = () => {
+            staleCheckInterval = setInterval(() => {
+                const el = document.getElementById(staleId);
+                if (el && this._redistStale) el.style.display = 'block';
+            }, 500);
+        };
+        startStaleCheck();
+
+        const action = await mm.show({
+            title: 'Redistribute Proceeds',
+            body: tableHtml,
+            fields: null,
+            buttons: [
+                {text: 'Cancel', value: 'cancel'},
+                {text: 'Re-run', value: 'rerun'},
+                {text: 'Apply', value: 'apply', class: 'btn-primary'}
+            ],
+            modalBoxClass: 'pt-redistribute-modal'
+        });
+
+        clearInterval(staleCheckInterval);
+
+        if (action === 'rerun') {
+            cleanup();
+            return this._redistributeProceeds();
+        }
+
+        if (action !== 'apply') {
+            cleanup();
+            return;
+        }
+
+        // If stale, require double confirmation
+        if (this._redistStale) {
+            const confirm = await mm.show({
+                title: 'Stale Data Warning',
+                body: `<div style="padding:12px;">
+                    <p style="color:var(--danger, #e74c3c);font-weight:600;margin-bottom:8px;">Portfolio data has changed since this redistribution was computed.</p>
+                    <p>Applying may produce unexpected results. Are you sure?</p>
+                </div>`,
+                fields: null,
+                buttons: [
+                    {text: 'Cancel', value: 'cancel'},
+                    {text: 'Re-run Instead', value: 'rerun'},
+                    {text: 'Apply Anyway', value: 'apply', class: 'btn-danger'}
+                ],
+                modalBoxClass: 'pt-redistribute-modal'
+            });
+
+            if (confirm === 'rerun') {
+                cleanup();
+                return this._redistributeProceeds();
+            }
+            if (confirm !== 'apply') {
+                cleanup();
+                return;
+            }
+        }
+
+        // Apply: publish the updates to the portfolio grid
+        const room = roomContext.room;
+        const meta = sm.buildPayloadContext(room, roomContext);
+        const data = sm.buildPayloadData(room, roomContext, updates);
+        await sm.publishMessage(room, meta, data);
+        toast.success('Proceeds Solver', `Applied redistribution to ${updates.length} rows.`);
+        cleanup();
+    }
+
     setupTooltips() {
         const flipLock = this.flipLock.bind(this);
         const lockState = () => this.context.page.page$.get('proceedsLocked');
@@ -122,12 +321,13 @@ export class PivotWidget extends BaseWidget {
             }
         });
 
+        const widget = this;
         this.context.page.tooltipManager().registerContextMenuItem({
             id: 'redistribute-proceeds',
             label: 'Redistribute Proceeds',
             icon: '',
             handler({tooltip}) {
-                toast.info('Proceeds Solver', 'Redistributing...');
+                widget._redistributeProceeds();
             }
         });
 
@@ -162,7 +362,7 @@ export class PivotWidget extends BaseWidget {
                 {id: 'btn-unlock-proceeds', label: 'Unlock', variant: 'portfolio', onClick: () => flipLock(false), closeOnClick: false},
                 {
                     id: 'btn-redist-proceeds', label: 'Redistribute', variant: 'portfolio', onClick: () => {
-                        toast.info('Proceeds Solver', 'Redistributing...')
+                        this._redistributeProceeds();
                     }, closeOnClick: false
                 },
             ],

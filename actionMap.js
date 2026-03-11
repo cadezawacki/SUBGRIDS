@@ -25,5 +25,6 @@ export const ACTION_MAP = new BiMap({
     21: 'fetch_schema',
     22: 'micro_publish',
     23: 'micro_subscribe',
-    24: 'micro_unsubscribe'
+    24: 'micro_unsubscribe',
+    25: 'redistribute'
 })

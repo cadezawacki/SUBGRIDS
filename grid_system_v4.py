@@ -3552,8 +3552,19 @@ class GridSystem:
         broadcast_payloads = {}
         if remove_payloads:
             pk_col = config.primary_keys[0]
-            removed_ids = [r.hyper.to_list(pk_col) for r in remove_payloads if r is not None]
-            broadcast_payloads["remove"] = [{config.primary_keys[0]: rid} for rid in removed_ids]
+            # remove_payloads is List[pl.DataFrame] — extract all PK values
+            removed_ids = []
+            for r in ensure_list(remove_payloads):
+                if r is None:
+                    continue
+                if isinstance(r, pl.DataFrame) and pk_col in r.columns:
+                    removed_ids.extend(r[pk_col].cast(pl.String).to_list())
+                elif isinstance(r, dict):
+                    rid = r.get(pk_col)
+                    if rid is not None:
+                        removed_ids.append(str(rid))
+            if removed_ids:
+                broadcast_payloads["remove"] = [{pk_col: rid} for rid in removed_ids]
         if add_count > 0:
             broadcast_payloads["add"] = delta_rows[:add_count]
         if add_count < len(delta_rows):
@@ -3623,16 +3634,16 @@ class GridSystem:
                     # Normalize result to DataFrame
                     if isinstance(result, pl.LazyFrame):
                         result = result.collect()
-                    if not isinstance(result, pl.DataFrame) or len(result) == 0:
+                    if not isinstance(result, pl.DataFrame) or result.hyper.is_empty():
                         continue
 
                     # Apply rule output
                     if target_room == room:
                         # Rule outputs to the same micro-grid — apply directly
-                        rule_payloads = {"update": result.to_dicts()}
+                        rule_payloads = {"update": [result]}
                         rule_delta = await actor.apply_edit(rule_payloads, user="rule:" + rdef.name)
 
-                        if rule_delta is not None and len(rule_delta) > 0:
+                        if rule_delta is not None and not rule_delta.hyper.is_empty():
                             rule_pub = MicroPublish(
                                 micro_name=micro_name,
                                 payloads={"update": rule_delta.to_dicts()},

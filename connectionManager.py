@@ -790,6 +790,8 @@ class ConnectionManager:
                 "micro_publish": self._handle_micro_publish,
                 "micro_subscribe": self._handle_micro_subscribe,
                 "micro_unsubscribe": self._handle_micro_unsubscribe,
+                # Redistribute proceeds
+                "redistribute": self._handle_redistribute,
             }
         dispatch = self._DISPATCH.get(action)
 
@@ -1026,7 +1028,7 @@ class ConnectionManager:
                 cnt+=1
         try:
             outbounds = []
-            await log.notify(f"Injesting {n} micro updates")
+            await log.notify(f"Ingesting {cnt} micro update categories")
             async for outbound in self.grid_system.ingest_micro_publish(
                     micro_name, payloads, user=user, trace=trace
             ):
@@ -2030,6 +2032,120 @@ class ConnectionManager:
                 f"Execute failed: {e}",
                 toastType='error', toastTitle="Execute", toastId=tid, toastOptions={"persist": False}
             ))
+
+    # -------------------------------------------------------------------------
+    # Redistribute Proceeds
+    # -------------------------------------------------------------------------
+
+    async def _handle_redistribute(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        context_raw = d.get("context") or {}
+        room = context_raw.get("room")
+        grid_id = context_raw.get("grid_id")
+
+        if not room or not grid_id:
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": "Missing room or grid_id"},
+            })
+
+        # --- Resolve portfolio grid actor ---
+        try:
+            quick_context = RoomContext(room=room, grid_id=grid_id)
+            if quick_context.primary_keys is None:
+                quick_context.primary_keys = await query_primary_keys(grid_id)
+
+            actor = await self.grid_system.get_actor(quick_context, create_on_missing=False)
+        except Exception as e:
+            await log.error(f"[redistribute] actor lookup failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"No active grid: {e}"},
+            })
+
+        # --- Fetch the current grid frame ---
+        needed_cols = [
+            "grossSize", "refSkew", "refSkewPx", "refSkewSpd",
+            "ticker", "isin", "cusip", "description", "userSide", "QT",
+        ]
+        pk_cols = quick_context.primary_keys or []
+        fetch_cols = list(set(pk_cols + needed_cols))
+
+        try:
+            grid_frame = await self.grid_system.get_frame(quick_context, cols=fetch_cols)
+        except Exception as e:
+            await log.error(f"[redistribute] get_frame failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Failed to read grid data: {e}"},
+            })
+
+        # --- Fetch microgrid constraints (hot_tickers) ---
+        micro_constraints = None
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            micro_actor = get_micro_actor("hot_tickers")
+            micro_snap = micro_actor.snapshot()
+            if not micro_snap.hyper.is_empty():
+                micro_constraints = micro_snap
+        except KeyError:
+            # Microgrid not yet initialized — create it on the fly
+            try:
+                from app.services.redux.micro_grid import (
+                    get_micro_registry, MicroGridConfig, init_micro_grids
+                )
+                registry = get_micro_registry()
+                if "hot_tickers" not in registry._configs:
+                    registry.register(MicroGridConfig(
+                        name="hot_tickers",
+                        table_name="micro_hot_tickers",
+                        primary_keys=("id",),
+                        columns={
+                            "id": "", "column": "ticker", "pattern": "",
+                            "match_mode": "literal", "severity": "low",
+                            "color": "#FFFF00", "tags": "", "notes": "",
+                            "updated_at": "", "updated_by": "",
+                        },
+                        column_types={
+                            "id": pl.String, "column": pl.String, "pattern": pl.String,
+                            "match_mode": pl.String, "severity": pl.String,
+                            "color": pl.String, "tags": pl.String, "notes": pl.String,
+                            "updated_at": pl.String, "updated_by": pl.String,
+                        },
+                        rules_enabled=True,
+                        persist=True,
+                    ))
+                    await init_micro_grids()
+                await log.info("[redistribute] hot_tickers microgrid created on demand")
+            except Exception as e2:
+                await log.warning(f"[redistribute] Could not init hot_tickers: {e2}")
+        except Exception as e:
+            await log.warning(f"[redistribute] Could not load hot_tickers constraints: {e}")
+
+        # --- Call the processor (CPU-bound — run off the event loop) ---
+        try:
+            from app.services.redux.processRedistributeProceeds import process as redistribute_process
+            params = (d.get("data") or {}).get("params") or {}
+            result = await asyncio.to_thread(
+                redistribute_process, grid_frame, pk_cols, params, micro_constraints
+            )
+        except Exception as e:
+            await log.error(f"[redistribute] process failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Redistribute calculation failed: {e}"},
+            })
+
+        # --- Send result back to the requesting client only ---
+        return await self._send_direct_message(websocket, {
+            "action": "redistribute",
+            "trace": trace,
+            "data": result,
+        })
 
     # -------------------------------------------------------------------------
     # Emit Loop (batch → sockets)

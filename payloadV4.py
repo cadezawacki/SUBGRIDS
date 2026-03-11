@@ -857,6 +857,7 @@ class Message:
         22: 'micro_publish',
         23: 'micro_subscribe',
         24: 'micro_unsubscribe',
+        25: 'redistribute',
     })
 
     def __init__(self,

@@ -34,7 +34,7 @@ export class SubscriptionManager {
         if (this.batchingEnabled) {
             this.payloadBatcher = new EnhancedPayloadBatcher({
                 batchWindow: this.batchWindow,
-                maxBatchSize: -1,
+                maxBatchSize: 200,
                 maxBatchBytes: options.maxBatchBytes || 1024 * 1024,
                 compressionThreshold: options.compressionThreshold || 1024,
                 enableColumnar: this.columnarEnabled,
@@ -178,6 +178,7 @@ export class SubscriptionManager {
             case 'micro_unsubscribe':
                 await this._handleMicroGridMessage(message);
                 break;
+            case 'redistribute': break;
             default: console.warn("Unknown action:", action, message);
         }
 
