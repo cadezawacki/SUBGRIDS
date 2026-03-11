@@ -1,6 +1,5 @@
 
 
-import { OptimizedColumnarCodec } from '@/global/optimizedColumnarCodec.js';
 import {ZstdInit} from "@oneidentity/zstd-js";
 import {pack, unpack} from 'msgpackr';
 import {HyperTable} from "@/utils/HyperTable";
@@ -18,7 +17,6 @@ export class SerialManager {
         this.ZstdStream = null;
         this._zstdReady = false;
         this._zstdPromise = this.initCompressionLibrary();
-        this._columnarCodec = new OptimizedColumnarCodec();
         this._columnarThreshold = options.columnarThreshold || 10;
         this.textDecoder = new TextDecoder();
 
@@ -53,12 +51,13 @@ export class SerialManager {
             return null;
         }
         try {
-            if (!this._zstdReady || enc.byteLength > 4_194_304) {
-                // Skip compression if zstd not ready or payload > 4MB
-                // (large payloads can exhaust WASM heap)
+            const len = enc.byteLength || enc.length || 0;
+            if (!this._zstdReady || len < this.compression_threshold || len > 4_194_304) {
+                // Skip compression if zstd not ready, payload below threshold,
+                // or payload > 4MB (large payloads can exhaust WASM heap)
                 return enc;
             }
-            return this.ZstdStream.compress(enc, this.compressLevel);
+            return this.ZstdSimple.compress(enc, this.compressLevel);
         } catch(e) {
             console.error('SerialManager compress failed:', e)
             return enc;
@@ -94,14 +93,14 @@ export class SerialManager {
             return payload;
         }
 
-        return this.ZstdStream.decompress(payload);
+        return this.ZstdSimple.decompress(payload);
     }
 
     compress(payload, level=this.compressLevel) {
         const len = payload.byteLength || payload.length || 0;
         if (len < 100 || !this._zstdReady || len > 4_194_304) return payload;
         try {
-            return this.ZstdStream.compress(payload, level);
+            return this.ZstdSimple.compress(payload, level);
         } catch (e) {
             console.error('SerialManager compress failed:', e);
             return payload;
@@ -137,24 +136,12 @@ export class SerialManager {
             if (message?.data && (message.data instanceof Uint8Array)) {
                 message = await this.loadArrowTable(message, message.data);
             }
-            // Flexible payloads: array rows, direct columnar, or { frame }
+            // Payloads with columnar data are left as-is for the consumer to decode.
+            // The consumer (e.g. _parsePublishedPortfolioData) already handles
+            // columnar via fromColumnar(). Eagerly decoding here was redundant work
+            // that blocked the main thread during deserialization.
             else if (message?.data?.payloads) {
-                const { payloads } = message.data;
-                const toRows = (delta) => {
-                    if (!delta) return [];
-                    if (Array.isArray(delta)) return delta;                           // already rows
-                    if (delta._format) return this._columnarCodec.decodeToRows(delta); // direct columnar
-                    if (delta.frame?._format) return this._columnarCodec.decodeToRows(delta.frame); // {frame}
-                    if (typeof delta === 'object') return [delta]
-                    return []
-                };
-                for (const action of ['add', 'update', 'remove']) {
-                    const chunk = payloads[action];
-                    const parts = Array.isArray(chunk) ? chunk : [chunk];
-                    const out = [];
-                    for (let i = 0; i < parts.length; i++) out.push(...toRows(parts[i]));
-                    payloads[action] = out;
-                }
+                // no-op: pass through columnar payloads without decoding
             }
         } else if (this.isArrayBuffer(payload) && this.isArrow(payload)) {
             message = await this.loadArrowTable({}, payload);
