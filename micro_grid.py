@@ -348,122 +348,171 @@ class MicroGridActor:
         payloads format:
             { "add": List[pl.DataFrame], "update": List[pl.DataFrame], "remove": List[pl.DataFrame] }
 
-        Each value is a list of polars DataFrames (as deserialized from the wire).
+        Each value is a list of polars DataFrames as deserialized from the wire.
+        Each frame may carry a different subset of columns — they are NOT merged
+        because that would fabricate NULLs for columns absent from a given frame.
 
         Returns: DataFrame of changed rows (the delta), or None if no changes.
         """
         pk_col = self.config.primary_keys[0]
         target_schema = {c: self.config.column_types[c] for c in self.config.columns}
 
-        # --- Normalize payloads: merge List[pl.DataFrame] into single DataFrames ---
-        add_df = self._merge_payload_frames(payloads.get("add"), target_schema)
-        update_df = self._merge_payload_frames(payloads.get("update"), target_schema)
-        remove_df = self._merge_payload_frames(payloads.get("remove"), target_schema)
+        # Normalize raw payload values into List[pl.DataFrame]
+        add_frames = _normalize_payload_frames(payloads.get("add"), target_schema)
+        update_frames = _normalize_payload_frames(payloads.get("update"), target_schema)
+        remove_frames = _normalize_payload_frames(payloads.get("remove"), target_schema)
 
-        add_delta: Optional[pl.DataFrame] = None
-        update_delta: Optional[pl.DataFrame] = None
+        add_deltas: List[pl.DataFrame] = []
+        update_dirty_ids: Set[str] = set()
         has_removes = False
 
         async with self._lock:
             current = self._data
 
-            # --- Add ---
-            if add_df is not None and not add_df.hyper.is_empty():
+            # --- Add: process each frame independently ---
+            for frame in add_frames:
+                if pk_col not in frame.columns:
+                    continue
                 # Auto-generate IDs for rows missing the PK
-                pk_series = add_df[pk_col].cast(pl.String)
+                pk_series = frame[pk_col].cast(pl.String)
                 needs_id_mask = pk_series.is_null() | (pk_series == "")
                 if needs_id_mask.any():
-                    new_ids = [str(uuid.uuid4()) if needs else existing
-                               for needs, existing in zip(needs_id_mask.to_list(), pk_series.to_list())]
-                    add_df = add_df.with_columns(pl.Series(pk_col, new_ids, dtype=pl.String))
+                    new_ids = [
+                        str(uuid.uuid4()) if needs else existing
+                        for needs, existing in zip(
+                            needs_id_mask.to_list(), pk_series.to_list()
+                        )
+                    ]
+                    frame = frame.with_columns(
+                        pl.Series(pk_col, new_ids, dtype=pl.String)
+                    )
 
-                # Fill missing columns with defaults
+                # Fill missing columns with config defaults (only those absent)
+                fill_exprs = []
                 for col, default in self.config.columns.items():
-                    if col not in add_df.columns:
+                    if col not in frame.columns:
                         expected_type = self.config.column_types.get(col, pl.String)
-                        add_df = add_df.with_columns(pl.lit(default, dtype=expected_type).alias(col))
+                        fill_exprs.append(
+                            pl.lit(default, dtype=expected_type).alias(col)
+                        )
+                if fill_exprs:
+                    frame = frame.with_columns(fill_exprs)
 
-                # Ensure column order and types match target schema
-                add_df = add_df.select([pl.col(c).cast(target_schema[c], strict=False) for c in target_schema])
+                # Select and cast to target schema column order + types
+                frame = frame.select(
+                    [pl.col(c).cast(target_schema[c], strict=False)
+                     for c in target_schema]
+                )
 
-                # Deduplicate: remove existing rows with same PK before adding
-                new_ids_list = add_df[pk_col].cast(pl.String).to_list()
+                # Deduplicate against current data before appending
+                new_ids_list = frame[pk_col].cast(pl.String).to_list()
                 dedup_mask = current[pk_col].cast(pl.String).is_in(new_ids_list)
                 if dedup_mask.any():
                     current = current.filter(~dedup_mask)
-                current = pl.concat([current, add_df], how="diagonal_relaxed")
 
-                # Track dirty IDs
+                current = pl.concat([current, frame], how="vertical")
+
                 for rid in new_ids_list:
                     self._persist_dirty_ids.add(str(rid))
+                add_deltas.append(frame)
 
-                add_delta = add_df
+            # --- Update: process each frame independently ---
+            # Each frame may carry only a subset of columns (PK + changed cols).
+            for frame in update_frames:
+                if pk_col not in frame.columns:
+                    continue
+                # Columns in this frame that are updatable
+                update_cols = [
+                    c for c in frame.columns
+                    if c != pk_col and c in current.columns
+                ]
+                if not update_cols:
+                    continue
 
-            # --- Update ---
-            if update_df is not None and not update_df.hyper.is_empty():
-                update_cols = [c for c in update_df.columns if c != pk_col and c in current.columns]
-                update_ids = update_df[pk_col].cast(pl.String).to_list()
-
-                for rid_str in update_ids:
+                frame_ids = frame[pk_col].cast(pl.String).to_list()
+                for rid_str in frame_ids:
                     mask = current[pk_col].cast(pl.String) == rid_str
                     if not mask.any():
                         continue
-                    # Get the update row for this ID
-                    row_df = update_df.filter(update_df[pk_col].cast(pl.String) == rid_str)
+                    # Extract update values for this row from the frame
+                    row_df = frame.filter(
+                        frame[pk_col].cast(pl.String) == rid_str
+                    )
                     if row_df.hyper.is_empty():
                         continue
-                    # Apply each column update
-                    col_updates = []
+                    # Build all column updates in one batch
+                    col_exprs = []
                     for col in update_cols:
                         val = row_df[col].item(0)
-                        expected_type = self.config.column_types.get(col, pl.String)
-                        col_updates.append(
+                        expected_type = self.config.column_types.get(
+                            col, pl.String
+                        )
+                        col_exprs.append(
                             pl.when(mask)
                             .then(pl.lit(val, dtype=expected_type))
                             .otherwise(pl.col(col))
                             .alias(col)
                         )
-                    if col_updates:
-                        current = current.with_columns(col_updates)
+                    if col_exprs:
+                        current = current.with_columns(col_exprs)
                     self._persist_dirty_ids.add(rid_str)
+                    update_dirty_ids.add(rid_str)
 
-                # Materialize updated rows for delta
-                all_update_ids = update_df[pk_col].cast(pl.String).to_list()
-                updated_rows = current.filter(current[pk_col].cast(pl.String).is_in(all_update_ids))
-                if not updated_rows.hyper.is_empty():
-                    update_delta = updated_rows
-
-            # --- Remove ---
-            if remove_df is not None and not remove_df.hyper.is_empty():
-                remove_ids = remove_df[pk_col].cast(pl.String).to_list()
+            # --- Remove: process each frame independently ---
+            for frame in remove_frames:
+                if pk_col not in frame.columns:
+                    continue
+                remove_ids = frame[pk_col].cast(pl.String).to_list()
                 remove_id_set = set(remove_ids)
-                if remove_id_set:
-                    remove_mask = current[pk_col].cast(pl.String).is_in(list(remove_id_set))
-                    if remove_mask.any():
-                        has_removes = True
-                    current = current.filter(~remove_mask)
-                    for rid in remove_id_set:
-                        self._persist_deleted_ids.add(rid)
-                        self._persist_dirty_ids.discard(rid)
+                if not remove_id_set:
+                    continue
+                remove_mask = current[pk_col].cast(pl.String).is_in(
+                    list(remove_id_set)
+                )
+                if remove_mask.any():
+                    has_removes = True
+                current = current.filter(~remove_mask)
+                for rid in remove_id_set:
+                    self._persist_deleted_ids.add(rid)
+                    self._persist_dirty_ids.discard(rid)
 
             self._data = current
 
-            # Build combined delta
-            delta_parts = []
+            # --- Build delta output ---
+            # Add deltas: each frame was already shaped to target_schema
             add_count = 0
-            if add_delta is not None:
-                delta_parts.append(add_delta)
+            if add_deltas:
+                add_delta = (
+                    pl.concat(add_deltas, how="vertical")
+                    if len(add_deltas) > 1 else add_deltas[0]
+                )
                 add_count = add_delta.height
-            if update_delta is not None:
-                delta_parts.append(update_delta)
+            else:
+                add_delta = None
 
+            # Update delta: materialize from current data by dirty IDs
+            if update_dirty_ids:
+                update_delta = current.filter(
+                    current[pk_col].cast(pl.String).is_in(
+                        list(update_dirty_ids)
+                    )
+                )
+                if update_delta.hyper.is_empty():
+                    update_delta = None
+            else:
+                update_delta = None
+
+            # Combine
+            delta_parts = [p for p in (add_delta, update_delta) if p is not None]
             if delta_parts or has_removes:
                 self._dirty = True
 
             if delta_parts:
-                delta_df = pl.concat(delta_parts, how="diagonal_relaxed") if len(delta_parts) > 1 else delta_parts[0]
-                # Ensure schema matches
-                delta_df = delta_df.select([pl.col(c).cast(target_schema[c], strict=False) for c in target_schema if c in delta_df.columns])
+                if len(delta_parts) == 1:
+                    delta_df = delta_parts[0]
+                else:
+                    # Both add and update deltas share full target_schema
+                    delta_df = pl.concat(delta_parts, how="vertical")
                 delta_df._micro_add_count = add_count
             elif has_removes:
                 delta_df = pl.DataFrame(schema=target_schema)
@@ -473,45 +522,55 @@ class MicroGridActor:
 
         return delta_df
 
-    @staticmethod
-    def _merge_payload_frames(
-        frames: Any,
-        target_schema: Dict[str, pl.DataType],
-    ) -> Optional[pl.DataFrame]:
-        """
-        Normalize a payload value into a single pl.DataFrame.
 
-        Handles:
-          - None / empty list → None
-          - List[pl.DataFrame] → concat into one
-          - List[dict] → build DataFrame (legacy/rules path)
-          - single pl.DataFrame → pass through
-        """
-        if frames is None:
-            return None
-        if isinstance(frames, pl.DataFrame):
-            return frames
-        frames = ensure_list(frames)
-        if not frames:
-            return None
+# =============================================================================
+# Payload normalization
+# =============================================================================
 
-        # Check first element to determine type
-        first = frames[0]
-        if isinstance(first, pl.DataFrame):
-            # List[pl.DataFrame] — concat
-            non_empty = [f for f in frames if not f.hyper.is_empty()]
-            if not non_empty:
-                return None
-            if len(non_empty) == 1:
-                return non_empty[0]
-            return pl.concat(non_empty, how="diagonal_relaxed")
-        elif isinstance(first, dict):
-            # List[dict] — legacy path (rules engine)
-            if not frames:
-                return None
-            return pl.DataFrame(frames, schema=target_schema, strict=False)
-        else:
-            return None
+def _normalize_payload_frames(
+    raw: Any,
+    target_schema: Dict[str, pl.DataType],
+) -> List[pl.DataFrame]:
+    """
+    Normalize a raw payload value into List[pl.DataFrame].
+
+    Handles all shapes that arrive here:
+      - None / empty list → []
+      - List[pl.DataFrame] → returned as-is (empty frames filtered out)
+      - single pl.DataFrame → wrapped in a list
+      - List[dict] → each dict becomes a single-row DataFrame (legacy/rules path)
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, pl.DataFrame):
+        return [raw] if not raw.hyper.is_empty() else []
+
+    frames = ensure_list(raw)
+    if not frames:
+        return []
+
+    first = frames[0]
+    if isinstance(first, pl.DataFrame):
+        return [f for f in frames if not f.hyper.is_empty()]
+    elif isinstance(first, dict):
+        # Legacy path (rules engine passes List[dict]).
+        # Convert each dict into a single-row DataFrame to preserve
+        # per-row column sets without fabricating NULLs.
+        out: List[pl.DataFrame] = []
+        for d in frames:
+            if not isinstance(d, dict) or not d:
+                continue
+            # Only use columns present in this dict AND in the schema
+            row_schema = {
+                k: target_schema[k] for k in d if k in target_schema
+            }
+            if not row_schema:
+                continue
+            out.append(
+                pl.DataFrame([d], schema=row_schema, strict=False)
+            )
+        return out
+    return []
 
 
 # =============================================================================
