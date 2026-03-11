@@ -1243,7 +1243,12 @@ export class ArrowEngine {
         if (batch.length === 1) {
             const p = batch[0] || {};
             if (p.global) return { global: true };
-            return { colsChanged: p.colsChanged ?? null, rowsChanged: p.rowsChanged ?? null };
+            // Normalize colsChanged: _bumpCellEpochByName passes a bare string,
+            // but downstream normalizeCols expects an Array (Array.from(string)
+            // splits into characters, breaking column lookups).
+            let c = p.colsChanged ?? null;
+            if (typeof c === 'string') c = [c];
+            return { colsChanged: c, rowsChanged: p.rowsChanged ?? null };
         }
 
         let global = false;
@@ -5936,6 +5941,7 @@ export class ArrowAgGridAdapter {
             const normalizeCols = (x) => {
                 if (x === true) return true;           // sentinel for “all columns”
                 if (!x) return null;                   // undefined/null → none
+                if (typeof x === 'string') return [x]; // single column name
                 if (Array.isArray(x)) return x.slice();
                 if (x instanceof Set) return Array.from(x);
                 try { return Array.from(x); } catch { return null; }
