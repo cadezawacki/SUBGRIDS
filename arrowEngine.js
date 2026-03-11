@@ -1187,7 +1187,7 @@ export class ArrowEngine {
     _emitMaterialize(rows, cols){ this._em.emitAsync('table-materialized', rows, cols); }
     _notifyDerivedDirty(name){ this._em.emitAsync('derived-dirty', new Set(asArray(name))); }
     _notifyColumnChanged(columns){
-        if (!columns) return;
+        return; // disabled — per-column async events during epoch handling cause cascading freezes
         const distinct = new Set(asArray(columns));
         distinct.forEach(col => {
             this._em.emitAsync(`column-changed-${this._normalizeColumnSelector(col)}`)
