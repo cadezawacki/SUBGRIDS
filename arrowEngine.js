@@ -1443,69 +1443,9 @@ export class ArrowEngine {
     }
 
     getCell(rowIndex, column, params){
-        const name = (typeof column === 'string')
-            ? column
-            : this._normalizeColumnSelector(column)[0];
-
-        if (!name) return null;
-
-        const ri = rowIndex | 0;
-        const n = this.table ? (this.table.numRows | 0) : 0;
-        if (ri < 0 || ri >= n) return null;
-
-        const ov = this._overlays.get(name);
-        if (ov){
-            if (ov.kind === 'number'){
-                const mask = ov.mask;
-                if (mask && ri < mask.length){
-                    const m = mask[ri];
-                    if (m === MASK_NULL) return null;
-                    if (m === MASK_VALUE) return ov.values[ri];
-                }
-            } else {
-                const mp = ov.map;
-                if (mp && mp.has(ri)) return mp.get(ri);
-            }
-        }
-
-        if (this._derived.has(name)){
-            const d = this._derived.get(name);
-            const settingsFn = this._settingsGetter.get(name);
-            try {
-                return d.getter(ri, this, settingsFn ? settingsFn() : undefined, params);
-            } catch (e){
-                // Avoid per-cell spam; derived errors should not kill render loop
-                const seen = this._derivedErrorOnce || (this._derivedErrorOnce = new Set());
-                if (!seen.has(name)){
-                    if (seen.size > 500) seen.clear(); // prevent unbounded growth
-                    seen.add(name);
-                    console.error(`ArrowEngine derived getter failed for "${name}"`, e);
-                }
-                return null;
-            }
-        }
-
-        const idx = this._nameToIndex.get(name);
-        if (idx == null) return null;
-
-        let vec = this._nameToVector.get(name);
-        if (!vec){
-            vec = this.table.getChildAt(idx);
-            this._nameToVector.set(name, vec);
-        }
-
-        let dec = this._decoder[name];
-        if (dec === undefined) dec = this._getDecoder(name);
-        if (dec) return dec(ri);
-
-        const scale = this._getScale(name);
-        let raw = vec.get(ri);
-
-        if (raw == null) return raw;
-        if (typeof raw === 'bigint') raw = Number(raw);
-        if (scale !== 1) raw *= scale;
-
-        return raw;
+        const name = typeof column==='string' ? column : this._normalizeColumnSelector(column)[0];
+        const get = this._getValueGetter(name, params);
+        return get(_toInt32(rowIndex));
     }
 
     getCellById(id, column, params){
@@ -2113,11 +2053,8 @@ export class ArrowEngine {
 
         if (!this._isDerived(name)) {
             this._editCount = (this._editCount || 0) + 1;
-            if (this._editCount >= this._autoCommitEditInterval && !this._isMaterializing) {
-                this._editCount = 0;
-                // Fire-and-forget: don't block the edit path on materialization.
-                // materializeEdits already coalesces via its 200ms debounce timer.
-                this.materializeEdits({commit:'auto'}).catch(() => {});
+            if (this._editCount % 20 === 0) {
+                await this.materializeEdits({commit:'auto'});
             }
         }
 
@@ -2832,16 +2769,15 @@ export class ArrowEngine {
                     ov.size = 0;
                 }
             }
-            // Emit ONE coalesced epoch for all rebuilt columns instead of per-column bumps.
-            // Per-column bumps with no rowsChanged hit the markColumn path which refreshes
-            // ALL visible rows — extremely expensive during rapid editing.
-            if (rebuilt.length) {
-                this._emitEpochChange({ colsChanged: rebuilt, rowsChanged: true });
+            for (let i = 0; i < rebuilt.length; i++) {
+                this._bumpColEpochByName(rebuilt[i]);
             }
+            this._isMaterializing = false;
             this._editCount = 0;
             return this.table;
         }
 
+        this._isMaterializing = false;
         this._editCount = 0;
         return newTable;
     }
@@ -5871,33 +5807,17 @@ export class ArrowAgGridAdapter {
             const e = Math.max(s, Math.min(endRow, total));
             const want = e - s;
 
-            // Reuse the row buffer when possible: only reallocate when the
-            // viewport grows beyond the current pool capacity.  Each row object
-            // is a two-property shell ({id, srcIndex}) and is cheap to stamp,
-            // but avoiding repeated Array + object allocation on every scroll
-            // tick measurably reduces GC pauses under rapid-scroll scenarios.
-            const idKey = engine._idProperty;
-            const ixKey = this._idxProperty;
-            if (!this._rowPool || this._rowPool.length < want) {
-                this._rowPool = new Array(want);
-                for (let i = 0; i < want; i++) this._rowPool[i] = { [idKey]: null, [ixKey]: 0 };
-            }
-            const rows = this._rowPool;
+            let rows = new Array(want);
             for (let i = 0; i < want; i++) {
                 const src = idx[s + i];
-                const obj = rows[i];
-                obj[idKey] = engine.getRowIdByIndex(src);
-                obj[ixKey] = src;
+                rows[i] = { [engine._idProperty]: engine.getRowIdByIndex(src), [this._idxProperty]: src };
             }
-            // Hand ag-Grid a correctly-sized slice without allocating a new array
-            // when the pool is already the right size.
-            const rowData = want === rows.length ? rows : rows.slice(0, want);
 
             this.viewportTotal  = total;
             this.viewportWindow = [s, e];
-            this.viewportRows   = rowData;
+            this.viewportRows   = rows;
 
-            params.success({ rowData, rowCount: total});
+            params.success({ rowData: rows, rowCount: total});
         } catch (err) {
             console.error('Datasource.getRows error:', err);
             params.fail();
@@ -5969,16 +5889,6 @@ export class ArrowAgGridAdapter {
             let cols = normalizeCols(payload?.colsChanged);
             let rows = normalizeRows(payload?.rowsChanged);
 
-            // Detect active editing — if a cell editor is open, avoid
-            // refreshServerSide which destroys the editor.  Downgrade to
-            // the targeted markCell/markColumn path (deferred via flush,
-            // which has its own editing guard).
-            let isEditing = false;
-            try {
-                const ec = api.getEditingCells?.();
-                isEditing = !!(ec && ec.length);
-            } catch {}
-
             // Expand dependents if we have a concrete column list
             allCols = cols;
             if (cols && cols !== true) {
@@ -5994,18 +5904,8 @@ export class ArrowAgGridAdapter {
             // If global rows or global cols, let SSRM refresh
             const bigRefresh = (rows === true) || (allCols === true) || (!rows && !allCols);
             if (bigRefresh) {
-                if (isEditing) {
-                    // Downgrade: mark all dirty cols (flush will defer until editor closes)
-                    if (allCols && allCols !== true) {
-                        for (let i = 0; i < allCols.length; i++) this.markColumn(allCols[i]);
-                    } else {
-                        // Global change while editing — schedule a soft refresh after editor closes
-                        this._pendingPostEditRefresh = true;
-                    }
-                } else {
-                    api.refreshServerSide?.({ purge: false });
-                    this._applyCellRange(saved);
-                }
+                api.refreshServerSide?.({ purge: false });
+                this._applyCellRange(saved);
                 this.engine._notifyColumnChanged(allCols);
                 return;
             }
@@ -6014,7 +5914,7 @@ export class ArrowAgGridAdapter {
             if (rows && allCols) {
                 if (allCols !== true) {
                     const work = rows.length * allCols.length;
-                    if (work > 4096 && !isEditing) {
+                    if (work > 4096) {
                         api.refreshServerSide?.({ purge: false });
                         this._applyCellRange(saved);
                         this.engine._notifyColumnChanged(allCols);
@@ -6027,14 +5927,8 @@ export class ArrowAgGridAdapter {
                     this.engine._notifyColumnChanged(allCols);
                     return;
                 }
-                if (!isEditing) {
-                    api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
-                    this._applyCellRange(saved);
-                } else {
-                    if (rows && rows !== true) {
-                        for (let i = 0; i < rows.length; i++) this.markRow(rows[i] | 0);
-                    }
-                }
+                api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
+                this._applyCellRange(saved);
                 this.engine._notifyColumnChanged(allCols);
                 return;
             }
@@ -6051,18 +5945,12 @@ export class ArrowAgGridAdapter {
                 return;
             }
 
-            if (!isEditing) {
-                api.refreshServerSide?.({ purge: false });
-                this._applyCellRange(saved);
-            } else {
-                this._pendingPostEditRefresh = true;
-            }
+            api.refreshServerSide?.({ purge: false });
+            this._applyCellRange(saved);
             this.engine._notifyColumnChanged(allCols);
         } catch (e) {
             try {
-                if (!this._pendingPostEditRefresh) {
-                    this.api?.refreshServerSide?.({ purge: false });
-                }
+                this.api?.refreshServerSide?.({ purge: false });
                 if (saved) this._applyCellRange(saved);
                 if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
             } catch {}
@@ -6112,42 +6000,24 @@ export class ArrowAgGridAdapter {
         this._flushScheduled = false;
         const api = this.api; if (!api) return;
 
-        // Defer flush while a cell editor is active to prevent refreshCells
-        // from destroying/interrupting the editor mid-keystroke.
-        // Re-schedule instead of dropping — dirty sets are preserved.
-        try {
-            const editing = api.getEditingCells?.();
-            if (editing && editing.length > 0) {
-                this._scheduleFlush();
-                return;
-            }
-        } catch {}
-
         const rowNodes = this.dirty.rows.size
             ? Array.from(this.dirty.rows, r => api.getRowNode(this.engine.getRowIdByIndex(r))).filter(Boolean)
             : undefined;
 
-        // Use dirty.cols directly — _handleEpoch already expanded dependents
-        // before calling markCell/markColumn, so re-expanding here is redundant.
-        const columns = this.dirty.cols.size
-            ? Array.from(this.dirty.cols)
-            : undefined;
-
-        let do_suppressFlash = suppressFlash;
-        if (suppressFlash === 'auto') {
-            do_suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
+        let columns;
+        if (this.dirty.cols.size) {
+            const baseCols = Array.from(this.dirty.cols);
+            const closure = this.engine.getDependentsClosure(baseCols);
+            columns = Array.from(new Set(closure.length ? baseCols.concat(closure) : baseCols));
         }
-        const suppressFlash_bool = !!do_suppressFlash;
-        api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash: suppressFlash_bool });
+
+        suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
+
+        api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
         this.dirty.rows.clear();
         this.dirty.cols.clear();
-
-        // Drain any deferred refreshServerSide that was skipped during editing
-        if (this._pendingPostEditRefresh) {
-            this._pendingPostEditRefresh = false;
-            try { api.refreshServerSide?.({ purge: false }); } catch {}
-        }
+        if (this.dirty.cells) this.dirty.cells.clear();
     }
 
     _scheduleFlush() {
