@@ -109,6 +109,10 @@ export class TreeColumnChooser {
         // this.bindCoreEvents();
 
         this.simpleUndo = null;
+
+        // Undo stack for reverting column selection actions
+        this._undoStack = [];
+        this._undoMaxSize = 50;
     }
 
     // ==================== Initialization ====================
@@ -278,7 +282,12 @@ export class TreeColumnChooser {
         this.reloadBtn = this.createControlButton(reloadIcon, 'Reload View', () => this._handleReload());
         this.filterSelectedBtn = this.createControlButton(this.nonSelectedIcon, 'Filter Selected', () => this._handleFilterSelected());
 
+        const undoIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M7 19v-2h7.1q1.575 0 2.737-1T18 13.5T16.838 11T14.1 10H7.8l2.6 2.6L9 14L4 9l5-5l1.4 1.4L7.8 8h6.3q2.425 0 4.163 1.575T20 13.5t-1.737 3.925T14.1 19z"/></svg>`;
+        this.undoBtn = this.createControlButton(undoIcon, 'Undo Last Action', () => this._handleUndo());
+        this.undoBtn.disabled = true;
 
+        const exportIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 20q-.825 0-1.412-.587T4 18v-3h2v3h12v-3h2v3q0 .825-.587 1.413T18 20zm6-4l-5-5l1.4-1.4l2.6 2.6V4h2v8.2l2.6-2.6L17 11z"/></svg>`;
+        this.exportBtn = this.createControlButton(exportIcon, 'Export / Import Config', () => this._showExportImportModal());
 
         // this.deselectBtn = this.createControlButton(deselectIcon, 'Deselect All', () => this.deselectAll());
         // this.addColumnBtn = this.createControlButton(addColumnIcon, 'Create Column', () => this._handleNewColumn(), 'create-tree-column');
@@ -288,6 +297,8 @@ export class TreeColumnChooser {
         controls.appendChild(this.loadBtn);
         controls.appendChild(this.reloadBtn);
         controls.appendChild(this.filterSelectedBtn);
+        controls.appendChild(this.undoBtn);
+        controls.appendChild(this.exportBtn);
         // controls.appendChild(this.deselectBtn);
         // controls.appendChild(this.addColumnBtn);
 
@@ -2080,7 +2091,7 @@ export class TreeColumnChooser {
                 { name: 'autoTags', weight: 0.02 },
                 { name: 'customName', weight: 0.9 }
             ],
-            includeScore: false,
+            includeScore: true,
             includeMatches: false,
             isCaseSensitive: false,
             ignoreDiacritics: true,
@@ -2104,7 +2115,8 @@ export class TreeColumnChooser {
                 metaTags: col?.context?.metaTags,
                 groupNames: col?.context?.customColumnGroup?.split("/"),
                 autoTags: this.generateAutoTags(col),
-                customName: customName || null
+                customName: customName || null,
+                _searchImportance: col?.context?.search_importance ?? 1
             };
         });
 
@@ -2174,6 +2186,19 @@ export class TreeColumnChooser {
         if (!this.fuse) return;
 
         const results = this.fuse.search(this.searchTerm);
+
+        // Re-rank results using Fuse score combined with search_importance.
+        // Fuse score: 0 = perfect match, 1 = worst; importance: higher = better (default 1).
+        // Combined: lower score means the item should appear first.
+        results.sort((a, b) => {
+            const impA = a.item._searchImportance ?? 1;
+            const impB = b.item._searchImportance ?? 1;
+            // Divide fuse score by importance so higher importance lowers the effective score
+            const scoreA = (a.score ?? 0) / Math.max(impA, 0.01);
+            const scoreB = (b.score ?? 0) / Math.max(impB, 0.01);
+            return scoreA - scoreB;
+        });
+
         this._lastFuseResults = results;
 
         this.searchMatches.clear();
@@ -2200,6 +2225,15 @@ export class TreeColumnChooser {
 
         const results = this.fuse.search(this.searchTerm);
         if (!results || results.length === 0) return [];
+
+        // Re-rank with search_importance (same logic as performSearch)
+        results.sort((a, b) => {
+            const impA = a.item._searchImportance ?? 1;
+            const impB = b.item._searchImportance ?? 1;
+            const scoreA = (a.score ?? 0) / Math.max(impA, 0.01);
+            const scoreB = (b.score ?? 0) / Math.max(impB, 0.01);
+            return scoreA - scoreB;
+        });
 
         const rank = new Map();
         for (let i = 0; i < results.length; i++) rank.set(results[i].item.id, i);
@@ -3029,6 +3063,7 @@ export class TreeColumnChooser {
 
     handleNodeSelection(node, wantSelected) {
         if (!node) return;
+        this._pushUndo();
         if (node.isGroup) {
             // Fix [1]: batch apply visibility for descendants and actually append to grid
             const leaves = this._collectLeafIds(node);
@@ -3061,6 +3096,36 @@ export class TreeColumnChooser {
         this.renderAllNodes();
         this.hasUnsavedChanges = true;
         this._updateButtonStates();
+    }
+
+    _pushUndo() {
+        const state = this._getGridState();
+        if (!state) return;
+        this._undoStack.push(state);
+        if (this._undoStack.length > this._undoMaxSize) {
+            this._undoStack.shift();
+        }
+        this._updateUndoBtn();
+    }
+
+    async _handleUndo() {
+        if (this._undoStack.length === 0) return;
+        const prev = this._undoStack.pop();
+        await this._applyGridState(prev);
+        this.initializeSelectionStates();
+        this.renderAllNodes();
+        this._updateUndoBtn();
+    }
+
+    _updateUndoBtn() {
+        if (this.undoBtn) {
+            this.undoBtn.disabled = this._undoStack.length === 0;
+            this.undoBtn.setAttribute('data-tooltip',
+                this._undoStack.length > 0
+                    ? `Undo Last Action (${this._undoStack.length})`
+                    : 'Undo Last Action'
+            );
+        }
     }
 
     _appendColumnsToEnd(ids) {
@@ -3711,8 +3776,10 @@ export class TreeColumnChooser {
         if ((this.selectedNodes.size === 0) && (this.simpleUndo)) {
             await this._applyGridState(this.simpleUndo);
             this.simpleUndo = null;
+            return;
         }
 
+        this._pushUndo();
         this.simpleUndo = this.adapter.getGridState();
         this.selectedNodes.clear();
         this.indeterminateNodes.clear();
@@ -3946,6 +4013,140 @@ export class TreeColumnChooser {
         } catch (error) {
             console.error('Error loading saved state:', error);
         }
+    }
+
+    async _showExportImportModal() {
+        const treeCtx = this;
+        const currentState = this._getGridState();
+        const exportPayload = {
+            name: this.activePresetName || 'Untitled View',
+            ...currentState,
+            metadata: {
+                exported: true,
+                exportedAt: new Date().toISOString(),
+                gridName: this.gridName
+            }
+        };
+        const exportJson = JSON.stringify(exportPayload, null, 2);
+
+        await this.modalManager.showCustom({
+            title: 'Export / Import Configuration',
+            modalBoxClass: 'w-full max-w-2xl',
+            includeDefaultActions: false,
+            setupContent: (contentArea, dialog) => {
+                contentArea.innerHTML = `
+                    <div style="display:flex;flex-direction:column;gap:16px;padding:8px 0;">
+                        <div>
+                            <h3 style="font-weight:600;margin-bottom:8px;font-size:14px;">Export Current Config</h3>
+                            <div style="display:flex;gap:8px;">
+                                <button class="btn btn-sm btn-outline" data-action="copy-clipboard">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                    Copy to Clipboard
+                                </button>
+                                <button class="btn btn-sm btn-outline" data-action="save-file">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    Save to File
+                                </button>
+                            </div>
+                        </div>
+                        <div style="border-top:1px solid var(--ag-border-color, #ddd);padding-top:12px;">
+                            <h3 style="font-weight:600;margin-bottom:8px;font-size:14px;">Import Config</h3>
+                            <textarea data-role="import-text" placeholder="Paste config JSON here..." style="width:100%;height:120px;padding:8px;border:1px solid var(--ag-border-color, #ddd);border-radius:4px;font-family:monospace;font-size:12px;resize:vertical;"></textarea>
+                            <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                                <button class="btn btn-sm btn-primary" data-action="import-paste">Import from Text</button>
+                                <span style="color:#999;font-size:12px;">or</span>
+                                <label class="btn btn-sm btn-outline" style="cursor:pointer;">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:4px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                                    Upload File
+                                    <input type="file" accept=".json" data-action="import-file" style="display:none;" />
+                                </label>
+                            </div>
+                        </div>
+                        <div data-role="status-msg" style="display:none;padding:8px;border-radius:4px;font-size:13px;"></div>
+                    </div>
+                `;
+
+                const statusEl = contentArea.querySelector('[data-role="status-msg"]');
+                const showStatus = (msg, type = 'info') => {
+                    statusEl.style.display = 'block';
+                    statusEl.textContent = msg;
+                    statusEl.style.background = type === 'success' ? '#d4edda' : type === 'error' ? '#f8d7da' : '#d1ecf1';
+                    statusEl.style.color = type === 'success' ? '#155724' : type === 'error' ? '#721c24' : '#0c5460';
+                };
+
+                // Copy to clipboard
+                contentArea.querySelector('[data-action="copy-clipboard"]').addEventListener('click', async () => {
+                    try {
+                        await navigator.clipboard.writeText(exportJson);
+                        showStatus('Config copied to clipboard!', 'success');
+                    } catch (err) {
+                        showStatus('Failed to copy: ' + err.message, 'error');
+                    }
+                });
+
+                // Save to file
+                contentArea.querySelector('[data-action="save-file"]').addEventListener('click', () => {
+                    try {
+                        const safeName = (treeCtx.activePresetName || treeCtx.gridName || 'grid-config')
+                            .replace(/[^a-z0-9_-]/gi, '_').toLowerCase();
+                        const blob = new Blob([exportJson], { type: 'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `${safeName}.json`;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                        showStatus('File download started!', 'success');
+                    } catch (err) {
+                        showStatus('Failed to save: ' + err.message, 'error');
+                    }
+                });
+
+                // Import from pasted text
+                contentArea.querySelector('[data-action="import-paste"]').addEventListener('click', () => {
+                    const text = contentArea.querySelector('[data-role="import-text"]').value.trim();
+                    if (!text) {
+                        showStatus('Please paste a config JSON first.', 'error');
+                        return;
+                    }
+                    try {
+                        treeCtx.handleImport(text);
+                        dialog.close('imported_paste');
+                    } catch (err) {
+                        showStatus('Invalid JSON: ' + err.message, 'error');
+                    }
+                });
+
+                // Import from file upload
+                contentArea.querySelector('[data-action="import-file"]').addEventListener('change', (e) => {
+                    const file = e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (evt) => {
+                        try {
+                            treeCtx.handleImport(evt.target.result);
+                            dialog.close('imported_file');
+                        } catch (err) {
+                            showStatus('Failed to import file: ' + err.message, 'error');
+                        }
+                    };
+                    reader.onerror = () => showStatus('Failed to read file.', 'error');
+                    reader.readAsText(file);
+                });
+
+                // Close button in action bar
+                const actionBar = dialog.querySelector('[data-role="modal-actions"]');
+                if (actionBar) {
+                    const closeButton = document.createElement('button');
+                    closeButton.className = 'btn btn-sm';
+                    closeButton.textContent = 'Close';
+                    closeButton.addEventListener('click', () => dialog.close('cancel'));
+                    actionBar.appendChild(closeButton);
+                }
+            }
+        });
     }
 
     async importState() {
@@ -4443,6 +4644,7 @@ export class TreeColumnChooser {
         this.modalManager = null;
 
         this.pendingImport = null;
+        this._undoStack = [];
 
         this.fieldCache?.clear();
         this.fieldCache = null;
