@@ -2050,6 +2050,7 @@ class ConnectionManager:
                 "data": {"error": "Missing room or grid_id"},
             })
 
+        # --- Resolve portfolio grid actor ---
         try:
             quick_context = RoomContext(room=room, grid_id=grid_id)
             if quick_context.primary_keys is None:
@@ -2064,7 +2065,7 @@ class ConnectionManager:
                 "data": {"error": f"No active grid: {e}"},
             })
 
-        # Fetch the current grid frame with the columns we need
+        # --- Fetch the current grid frame ---
         needed_cols = [
             "grossSize", "refSkew", "refSkewPx", "refSkewSpd",
             "ticker", "isin", "cusip", "description", "userSide", "QT",
@@ -2082,11 +2083,55 @@ class ConnectionManager:
                 "data": {"error": f"Failed to read grid data: {e}"},
             })
 
-        # Call the processor (CPU-bound — run off the event loop)
+        # --- Fetch microgrid constraints (hot_tickers) ---
+        micro_constraints = None
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            micro_actor = get_micro_actor("hot_tickers")
+            micro_snap = micro_actor.snapshot()
+            if not micro_snap.hyper.is_empty():
+                micro_constraints = micro_snap
+        except KeyError:
+            # Microgrid not yet initialized — create it on the fly
+            try:
+                from app.services.redux.micro_grid import (
+                    get_micro_registry, MicroGridConfig, init_micro_grids
+                )
+                registry = get_micro_registry()
+                if "hot_tickers" not in registry._configs:
+                    registry.register(MicroGridConfig(
+                        name="hot_tickers",
+                        table_name="micro_hot_tickers",
+                        primary_keys=("id",),
+                        columns={
+                            "id": "", "column": "ticker", "pattern": "",
+                            "match_mode": "literal", "severity": "low",
+                            "color": "#FFFF00", "tags": "", "notes": "",
+                            "updated_at": "", "updated_by": "",
+                        },
+                        column_types={
+                            "id": pl.String, "column": pl.String, "pattern": pl.String,
+                            "match_mode": pl.String, "severity": pl.String,
+                            "color": pl.String, "tags": pl.String, "notes": pl.String,
+                            "updated_at": pl.String, "updated_by": pl.String,
+                        },
+                        rules_enabled=True,
+                        persist=True,
+                    ))
+                    await init_micro_grids()
+                await log.info("[redistribute] hot_tickers microgrid created on demand")
+            except Exception as e2:
+                await log.warning(f"[redistribute] Could not init hot_tickers: {e2}")
+        except Exception as e:
+            await log.warning(f"[redistribute] Could not load hot_tickers constraints: {e}")
+
+        # --- Call the processor (CPU-bound — run off the event loop) ---
         try:
             from processRedistributeProceeds import process as redistribute_process
             params = (d.get("data") or {}).get("params") or {}
-            result = await asyncio.to_thread(redistribute_process, grid_frame, pk_cols, params)
+            result = await asyncio.to_thread(
+                redistribute_process, grid_frame, pk_cols, params, micro_constraints
+            )
         except Exception as e:
             await log.error(f"[redistribute] process failed: {e}")
             return await self._send_direct_message(websocket, {
@@ -2095,7 +2140,7 @@ class ConnectionManager:
                 "data": {"error": f"Redistribute calculation failed: {e}"},
             })
 
-        # Send result back to the requesting client only
+        # --- Send result back to the requesting client only ---
         return await self._send_direct_message(websocket, {
             "action": "redistribute",
             "trace": trace,
