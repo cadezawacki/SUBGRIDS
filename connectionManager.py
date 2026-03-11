@@ -2127,7 +2127,7 @@ class ConnectionManager:
 
         # --- Call the processor (CPU-bound — run off the event loop) ---
         try:
-            from processRedistributeProceeds import process as redistribute_process
+            from app.services.redux.processRedistributeProceeds import process as redistribute_process
             params = (d.get("data") or {}).get("params") or {}
             result = await asyncio.to_thread(
                 redistribute_process, grid_frame, pk_cols, params, micro_constraints

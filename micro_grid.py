@@ -222,7 +222,12 @@ class MicroGridActor:
             schema={col: self.config.column_types[col] for col in self.config.columns}
         )
         try:
-            await db.upsert(self.config.table_name, schema_df)
+            await db.create(
+                self.config.table_name,
+                schema_df,
+                on_exists="replace",
+                primary_keys=list(self.config.primary_keys),
+            )
             await log.info(f"[MicroGrid] Created table: {self.config.table_name}")
         except Exception as e:
             await log.error(f"[MicroGrid] Failed to create table {self.config.table_name}: {e}")
@@ -254,7 +259,7 @@ class MicroGridActor:
                 pk_col = self.config.primary_keys[0]
                 for rid in deleted_ids:
                     try:
-                        await db.delete(
+                        await db.remove(
                             self.config.table_name,
                             filters={pk_col: rid},
                         )
