@@ -2172,8 +2172,8 @@ export class ArrowEngine {
             }
 
             // Physical persist (default path)
+            // persistEdit already calls _bumpCellEpochByName + _unfreezeDependentsOnChange
             await this.persistEdit(rowIndex, col, isClear ? null : value);
-            if (bumpSource) this._bumpCellEpochByName(rowIndex, col);
         }
         return true;
     }
@@ -2831,7 +2831,12 @@ export class ArrowEngine {
                     ov.map.clear();
                     ov.size = 0;
                 }
-                this._bumpColEpochByName(nm);
+            }
+            // Emit ONE coalesced epoch for all rebuilt columns instead of per-column bumps.
+            // Per-column bumps with no rowsChanged hit the markColumn path which refreshes
+            // ALL visible rows — extremely expensive during rapid editing.
+            if (rebuilt.length) {
+                this._emitEpochChange({ colsChanged: rebuilt, rowsChanged: true });
             }
             this._editCount = 0;
             return this.table;
@@ -4267,6 +4272,7 @@ export class ArrowAgGridAdapter {
 
         this.dirty = { rows: new Set(), cols: new Set(), cells: new Set() };
         this._flushScheduled = false;
+        this._pendingPostEditRefresh = false;
 
         this.name = name;
         this.grid$ = this.context.page.createStore(this.name, {
@@ -5959,8 +5965,15 @@ export class ArrowAgGridAdapter {
             let cols = normalizeCols(payload?.colsChanged);
             let rows = normalizeRows(payload?.rowsChanged);
 
-            // Save range to re-apply
-
+            // Detect active editing — if a cell editor is open, avoid
+            // refreshServerSide which destroys the editor.  Downgrade to
+            // the targeted markCell/markColumn path (deferred via flush,
+            // which has its own editing guard).
+            let isEditing = false;
+            try {
+                const ec = api.getEditingCells?.();
+                isEditing = !!(ec && ec.length);
+            } catch {}
 
             // Expand dependents if we have a concrete column list
             allCols = cols;
@@ -5977,8 +5990,18 @@ export class ArrowAgGridAdapter {
             // If global rows or global cols, let SSRM refresh
             const bigRefresh = (rows === true) || (allCols === true) || (!rows && !allCols);
             if (bigRefresh) {
-                api.refreshServerSide?.({ purge: false });
-                this._applyCellRange(saved);
+                if (isEditing) {
+                    // Downgrade: mark all dirty cols (flush will defer until editor closes)
+                    if (allCols && allCols !== true) {
+                        for (let i = 0; i < allCols.length; i++) this.markColumn(allCols[i]);
+                    } else {
+                        // Global change while editing — schedule a soft refresh after editor closes
+                        this._pendingPostEditRefresh = true;
+                    }
+                } else {
+                    api.refreshServerSide?.({ purge: false });
+                    this._applyCellRange(saved);
+                }
                 this.engine._notifyColumnChanged(allCols);
                 return;
             }
@@ -5987,7 +6010,7 @@ export class ArrowAgGridAdapter {
             if (rows && allCols) {
                 if (allCols !== true) {
                     const work = rows.length * allCols.length;
-                    if (work > 4096) {
+                    if (work > 4096 && !isEditing) {
                         api.refreshServerSide?.({ purge: false });
                         this._applyCellRange(saved);
                         this.engine._notifyColumnChanged(allCols);
@@ -6000,8 +6023,14 @@ export class ArrowAgGridAdapter {
                     this.engine._notifyColumnChanged(allCols);
                     return;
                 }
-                api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
-                this._applyCellRange(saved);
+                if (!isEditing) {
+                    api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
+                    this._applyCellRange(saved);
+                } else {
+                    if (rows && rows !== true) {
+                        for (let i = 0; i < rows.length; i++) this.markRow(rows[i] | 0);
+                    }
+                }
                 this.engine._notifyColumnChanged(allCols);
                 return;
             }
@@ -6018,12 +6047,18 @@ export class ArrowAgGridAdapter {
                 return;
             }
 
-            api.refreshServerSide?.({ purge: false });
-            this._applyCellRange(saved);
+            if (!isEditing) {
+                api.refreshServerSide?.({ purge: false });
+                this._applyCellRange(saved);
+            } else {
+                this._pendingPostEditRefresh = true;
+            }
             this.engine._notifyColumnChanged(allCols);
         } catch (e) {
             try {
-                this.api?.refreshServerSide?.({ purge: false });
+                if (!this._pendingPostEditRefresh) {
+                    this.api?.refreshServerSide?.({ purge: false });
+                }
                 if (saved) this._applyCellRange(saved);
                 if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
             } catch {}
@@ -6073,16 +6108,26 @@ export class ArrowAgGridAdapter {
         this._flushScheduled = false;
         const api = this.api; if (!api) return;
 
+        // Defer flush while a cell editor is active to prevent refreshCells
+        // from destroying/interrupting the editor mid-keystroke.
+        // Re-schedule instead of dropping — dirty sets are preserved.
+        try {
+            const editing = api.getEditingCells?.();
+            if (editing && editing.length > 0) {
+                this._scheduleFlush();
+                return;
+            }
+        } catch {}
+
         const rowNodes = this.dirty.rows.size
             ? Array.from(this.dirty.rows, r => api.getRowNode(this.engine.getRowIdByIndex(r))).filter(Boolean)
             : undefined;
 
-        let columns;
-        if (this.dirty.cols.size) {
-            const baseCols = Array.from(this.dirty.cols);
-            const closure = this.engine.getDependentsClosure(baseCols);
-            columns = Array.from(new Set(closure.length ? baseCols.concat(closure) : baseCols));
-        }
+        // Use dirty.cols directly — _handleEpoch already expanded dependents
+        // before calling markCell/markColumn, so re-expanding here is redundant.
+        const columns = this.dirty.cols.size
+            ? Array.from(this.dirty.cols)
+            : undefined;
 
         let do_suppressFlash = suppressFlash;
         if (suppressFlash === 'auto') {
@@ -6093,6 +6138,12 @@ export class ArrowAgGridAdapter {
 
         this.dirty.rows.clear();
         this.dirty.cols.clear();
+
+        // Drain any deferred refreshServerSide that was skipped during editing
+        if (this._pendingPostEditRefresh) {
+            this._pendingPostEditRefresh = false;
+            try { api.refreshServerSide?.({ purge: false }); } catch {}
+        }
     }
 
     _scheduleFlush() {
