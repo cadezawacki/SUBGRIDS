@@ -540,7 +540,7 @@ export class MiniEmitter {
     on(ev, fn){ if(!this._m.has(ev)) this._m.set(ev, new Set()); this._m.get(ev).add(fn); return () => this.off(ev, fn); }
     off(ev, fn){ try{ const s = this._m.get(ev); if(s){ s.delete(fn); if(s.size===0) this._m.delete(ev); } }catch{} }
     emit(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}]:`, e); } } }
-    emitAsync(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; queueMicrotask(()=>{ for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}] async:`, e); } } }); }
+    emitAsync(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; setTimeout(()=>{ for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}] async:`, e); } } }, 0); }
     dispose(){ this._m.clear(); }
 }
 
@@ -1215,7 +1215,13 @@ export class ArrowEngine {
         this._epochQueue.push(payload);
         if (!this._epochScheduled) {
             this._epochScheduled = true;
-            queueMicrotask(() => {
+            // Use setTimeout instead of queueMicrotask to yield to the event loop.
+            // queueMicrotask creates a synchronous chain:
+            //   _emitEpochChange → microtask → emitAsync('epoch-change') → microtask
+            //   → _handleEpoch → refreshServerSide → _getRows (sync filter+sort)
+            //   → _notifyDerivedDirty → emitAsync → microtask → ...
+            // All microtasks run before the browser renders, blocking the main thread.
+            setTimeout(() => {
                 // Swap the queue out atomically to avoid splice copy overhead
                 const batch = this._epochQueue;
                 this._epochQueue = [];
@@ -1223,7 +1229,7 @@ export class ArrowEngine {
                 if (this._disposed || !this._em) return;
                 const coalesced = this._coalesceEpochs(batch);
                 this._em.emitAsync(event, coalesced);
-            });
+            }, 0);
         }
     }
 
@@ -2012,8 +2018,9 @@ export class ArrowEngine {
             } catch {}
         };
 
-        if (typeof queueMicrotask === 'function') queueMicrotask(run);
-        else setTimeout(run, 0);
+        // Use setTimeout to yield to the event loop — queueMicrotask would
+        // chain synchronously with the epoch/emit microtask cascade.
+        setTimeout(run, 0);
     }
 
     getEditHandler(name) {
