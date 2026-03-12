@@ -419,18 +419,19 @@ export class CadesEmitter {
 
         let timer = null;
         let lastArgs = null;
-        let canLead = true;
+        let leadFired = false;
 
         function debounced(...args) {
             lastArgs = args;
 
-            if (leading && canLead) {
-                canLead = false;
+            if (leading && !timer) {
+                leadFired = true;
                 fn(...args);
                 timer = setTimeout(() => { flush(); }, wait);
                 return;
             }
 
+            leadFired = false;
             clearTimeout(timer);
             timer = setTimeout(() => { flush(); }, wait);
         }
@@ -438,16 +439,16 @@ export class CadesEmitter {
         function flush() {
             clearTimeout(timer);
             timer = null;
-            if (trailing && lastArgs && !canLead) fn(...lastArgs);
+            if (trailing && lastArgs && !leadFired) fn(...lastArgs);
             lastArgs = null;
-            canLead = true;
+            leadFired = false;
         }
 
         debounced.cancel = () => {
             clearTimeout(timer);
             timer = null;
             lastArgs = null;
-            canLead = true;
+            leadFired = false;
         };
 
         debounced.flush = () => {
