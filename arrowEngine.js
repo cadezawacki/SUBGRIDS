@@ -1199,7 +1199,7 @@ export class ArrowEngine {
     _emitMaterialize(rows, cols){ this._em.emitAsync('table-materialized', rows, cols); }
     _notifyDerivedDirty(name){ this._em.emitAsync('derived-dirty', new Set(asArray(name))); }
     _notifyColumnChanged(columns){
-        return; // disabled — per-column async events during epoch handling cause cascading freezes
+        if (!columns) return;
         const distinct = new Set(asArray(columns));
         distinct.forEach(col => {
             this._em.emitAsync(`column-changed-${this._normalizeColumnSelector(col)}`)
@@ -6051,6 +6051,15 @@ export class ArrowAgGridAdapter {
         // Clear cached class-rules / formatters for dirty columns so refreshCells
         // picks up fresh values.  Previously handled by _handleEpoch.
         if (columns) this.engine._clearCellCaches(columns);
+
+        // Notify external listeners (e.g. pivot adapter) that derived columns
+        // are dirty.  Previously done inside _handleEpoch; moved here so the
+        // notification fires without the infinite epoch cycle.
+        if (columns) {
+            const dirtyDerived = columns.filter(c => this.engine._isDerived(c));
+            if (dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
+            this.engine._notifyColumnChanged(columns);
+        }
 
         api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
