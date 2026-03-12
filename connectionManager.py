@@ -1,4 +1,5 @@
 
+
 import asyncio
 import contextlib
 import time
@@ -260,6 +261,7 @@ class ConnectionManager:
         self.executor = get_threads()
 
         await self.install_default_rules()
+        await self._init_micro_grids()
 
         self.outboundBatcher = PayloadBatcher(
             max_batch_size=OUT_MAX_BATCH,
@@ -318,6 +320,63 @@ class ConnectionManager:
         from app.services.rules.portfolio.portfolio_rules_v4 import register_portfolio_rules
         register_portfolio_rules(self.grid_system.rules)
 
+    async def _init_micro_grids(self):
+        """Register and initialize all micro-grids at startup."""
+        try:
+            import polars as pl
+            from app.services.redux.micro_grid import (
+                MicroGridConfig, MicroGridGroup,
+                register_micro_grid, register_micro_grid_group,
+                init_micro_grids,
+            )
+
+            # --- Register micro-grid configs ---
+            register_micro_grid(MicroGridConfig(
+                name="hot_tickers",
+                table_name="micro_hot_tickers",
+                primary_keys=("id",),
+                columns={
+                    "id": "",
+                    "column": "ticker",
+                    "pattern": "",
+                    "match_mode": "literal",
+                    "severity": "low",
+                    "color": "#FFFF00",
+                    "tags": "",
+                    "notes": "",
+                    "updated_at": "",
+                    "updated_by": "",
+                },
+                column_types={
+                    "id": pl.String,
+                    "column": pl.String,
+                    "pattern": pl.String,
+                    "match_mode": pl.String,
+                    "severity": pl.String,
+                    "color": pl.String,
+                    "tags": pl.String,
+                    "notes": pl.String,
+                    "updated_at": pl.String,
+                    "updated_by": pl.String,
+                },
+                rules_enabled=True,
+                persist=True,
+            ))
+
+            # --- Register micro-grid groups ---
+            register_micro_grid_group(MicroGridGroup(
+                name="pt_tools",
+                display_name="Portfolio Tools",
+                grids=("hot_tickers",),
+            ))
+
+            # --- Load from DB ---
+            await init_micro_grids()
+            await log.info("[MicroGrid] All micro-grids initialized")
+
+        except Exception as e:
+            await log.error(f"[MicroGrid] Initialization failed: {e}")
+
     async def shutdown(self):
         self._outbound_running = False
 
@@ -360,6 +419,12 @@ class ConnectionManager:
         self._lazy_columns.clear()
         self._lazy_tokens.clear()
         self._cleaning_up.clear()
+
+        try:
+            from app.services.redux.micro_grid import shutdown_micro_grids
+            await shutdown_micro_grids()
+        except Exception as e:
+            await log.error(f"Errored while shutting down micro-grids: {e}")
 
         try:
             await self.grid_system.shutdown()
@@ -721,6 +786,12 @@ class ConnectionManager:
                 "arrow_list_rooms": self._handle_arrow_list_rooms,
                 # Arrow IPC export
                 "arrow_export": self._handle_arrow_export,
+                # Micro-grid
+                "micro_publish": self._handle_micro_publish,
+                "micro_subscribe": self._handle_micro_subscribe,
+                "micro_unsubscribe": self._handle_micro_unsubscribe,
+                # Redistribute proceeds
+                "redistribute": self._handle_redistribute,
             }
         dispatch = self._DISPATCH.get(action)
 
@@ -923,6 +994,135 @@ class ConnectionManager:
         async for outbound_payload in self.grid_system.ingest_publish(p):
             outbounds.append(self.ctx.spawn(self.outboundBatcher.add_message(outbound_payload)))
         await asyncio.gather(*outbounds, return_exceptions=True)
+
+    # -------------------------------------------------------------------------
+    # Micro-grid handlers
+    # -------------------------------------------------------------------------
+
+    async def _handle_micro_publish(self, websocket: Optional[WebSocket], d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error("Missing micro_name")
+            )
+
+        payloads = (d.get("data") or {}).get("payloads") or {}
+        user_info = self.get_user_by_socket(websocket) if websocket else {}
+        user = getattr(user_info, "username", None) or "unknown"
+
+        # Auto-stamp updated_at / updated_by on add/update payloads
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        cnt = 0
+        for key in ("add", "update"):
+            tbls = payloads.get(key)
+            if tbls is not None:
+                new_tbls = []
+                for tbl in tbls:
+                    new_tbls.append(tbl.with_columns([
+                        pl.lit(now_str, pl.String).alias('updated_at'),
+                        pl.lit(user, pl.String).alias('updated_by')
+                    ]))
+                payloads[key] = new_tbls
+                cnt+=1
+        try:
+            outbounds = []
+            await log.notify(f"Ingesting {cnt} micro update categories")
+            async for outbound in self.grid_system.ingest_micro_publish(
+                    micro_name, payloads, user=user, trace=trace
+            ):
+                if isinstance(outbound, MicroPublish):
+                    await log.micro('broadcasting micro message')
+                    outbounds.append(self.ctx.spawn(
+                        self._broadcast_micro(outbound)
+                    ))
+                else:
+                    # Regular Publish from rules engine cross-grid writes
+                    await log.micro('broadcasting normal message')
+                    outbounds.append(self.ctx.spawn(
+                        self.outboundBatcher.add_message(outbound)
+                    ))
+            await asyncio.gather(*outbounds, return_exceptions=True)
+        except KeyError as e:
+            await log.error(f"[MicroGrid] Unknown micro-grid: {micro_name}")
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Unknown micro-grid: {micro_name}")
+            )
+        except Exception as e:
+            await log.error(f"[MicroGrid] Publish error: {e}")
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Micro-grid publish failed: {e}")
+            )
+
+    async def _handle_micro_subscribe(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error("Missing micro_name")
+            )
+
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+        except KeyError:
+            return await self._send_direct_message(
+                websocket, Error(trace=trace, suppress_context=True).error(f"Unknown micro-grid: {micro_name}")
+            )
+
+        # Register subscriber on the actor
+        actor.add_subscriber(websocket)
+
+        # Subscribe to the router topic for real-time updates
+        topic = f"MICRO.{micro_name.upper()}"
+        await self.router.subscribe(websocket, topic)
+
+        # Send initial snapshot
+        snapshot = actor.snapshot_as_rows()
+
+        response = {
+            "action": "micro_subscribe",
+            "micro_name": micro_name,
+            "data": {
+                "snapshot": snapshot,
+                "pk_columns": list(actor.config.primary_keys),
+                "columns": list(actor.config.columns.keys()),
+            },
+            "context": {
+                "room": topic,
+                "grid_id": actor.config.grid_id,
+            },
+            "status": {"code": 200, "success": True},
+            "trace": trace,
+        }
+        await self._send_direct_message(websocket, response)
+
+    async def _handle_micro_unsubscribe(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        micro_name = d.get("micro_name")
+        if not micro_name:
+            return
+
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+            actor.remove_subscriber(websocket)
+        except KeyError:
+            pass
+
+        topic = f"MICRO.{micro_name.upper()}"
+        try:
+            await self.router.unsubscribe(websocket, topic)
+        except Exception:
+            pass
+
+    async def _broadcast_micro(self, micro_pub: MicroPublish) -> int:
+        """Broadcast a MicroPublish delta to all subscribers of the micro-grid topic."""
+        await log.micro("BROADCASTING MICRO CHANGE")
+        topic = f"MICRO.{micro_pub.micro_name.upper()}"
+        payload_dict = micro_pub.to_dict()
+        return await self.broadcast_to_room(topic, payload_dict)
 
     async def _handle_trash(self, websocket: WebSocket, d: Dict[str, Any]):
         trace = self._extract_trace(d)
@@ -1832,6 +2032,120 @@ class ConnectionManager:
                 f"Execute failed: {e}",
                 toastType='error', toastTitle="Execute", toastId=tid, toastOptions={"persist": False}
             ))
+
+    # -------------------------------------------------------------------------
+    # Redistribute Proceeds
+    # -------------------------------------------------------------------------
+
+    async def _handle_redistribute(self, websocket: WebSocket, d: Dict[str, Any]):
+        trace = self._extract_trace(d)
+        context_raw = d.get("context") or {}
+        room = context_raw.get("room")
+        grid_id = context_raw.get("grid_id")
+
+        if not room or not grid_id:
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": "Missing room or grid_id"},
+            })
+
+        # --- Resolve portfolio grid actor ---
+        try:
+            quick_context = RoomContext(room=room, grid_id=grid_id)
+            if quick_context.primary_keys is None:
+                quick_context.primary_keys = await query_primary_keys(grid_id)
+
+            actor = await self.grid_system.get_actor(quick_context, create_on_missing=False)
+        except Exception as e:
+            await log.error(f"[redistribute] actor lookup failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"No active grid: {e}"},
+            })
+
+        # --- Fetch the current grid frame ---
+        needed_cols = [
+            "grossSize", "refSkew", "refSkewPx", "refSkewSpd",
+            "ticker", "isin", "cusip", "description", "userSide", "QT",
+        ]
+        pk_cols = quick_context.primary_keys or []
+        fetch_cols = list(set(pk_cols + needed_cols))
+
+        try:
+            grid_frame = await self.grid_system.get_frame(quick_context, cols=fetch_cols)
+        except Exception as e:
+            await log.error(f"[redistribute] get_frame failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Failed to read grid data: {e}"},
+            })
+
+        # --- Fetch microgrid constraints (hot_tickers) ---
+        micro_constraints = None
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            micro_actor = get_micro_actor("hot_tickers")
+            micro_snap = micro_actor.snapshot()
+            if not micro_snap.hyper.is_empty():
+                micro_constraints = micro_snap
+        except KeyError:
+            # Microgrid not yet initialized — create it on the fly
+            try:
+                from app.services.redux.micro_grid import (
+                    get_micro_registry, MicroGridConfig, init_micro_grids
+                )
+                registry = get_micro_registry()
+                if "hot_tickers" not in registry._configs:
+                    registry.register(MicroGridConfig(
+                        name="hot_tickers",
+                        table_name="micro_hot_tickers",
+                        primary_keys=("id",),
+                        columns={
+                            "id": "", "column": "ticker", "pattern": "",
+                            "match_mode": "literal", "severity": "low",
+                            "color": "#FFFF00", "tags": "", "notes": "",
+                            "updated_at": "", "updated_by": "",
+                        },
+                        column_types={
+                            "id": pl.String, "column": pl.String, "pattern": pl.String,
+                            "match_mode": pl.String, "severity": pl.String,
+                            "color": pl.String, "tags": pl.String, "notes": pl.String,
+                            "updated_at": pl.String, "updated_by": pl.String,
+                        },
+                        rules_enabled=True,
+                        persist=True,
+                    ))
+                    await init_micro_grids()
+                await log.info("[redistribute] hot_tickers microgrid created on demand")
+            except Exception as e2:
+                await log.warning(f"[redistribute] Could not init hot_tickers: {e2}")
+        except Exception as e:
+            await log.warning(f"[redistribute] Could not load hot_tickers constraints: {e}")
+
+        # --- Call the processor (CPU-bound — run off the event loop) ---
+        try:
+            from app.services.redux.processRedistributeProceeds import process as redistribute_process
+            params = (d.get("data") or {}).get("params") or {}
+            result = await asyncio.to_thread(
+                redistribute_process, grid_frame, pk_cols, params, micro_constraints
+            )
+        except Exception as e:
+            await log.error(f"[redistribute] process failed: {e}")
+            return await self._send_direct_message(websocket, {
+                "action": "redistribute",
+                "trace": trace,
+                "data": {"error": f"Redistribute calculation failed: {e}"},
+            })
+
+        # --- Send result back to the requesting client only ---
+        return await self._send_direct_message(websocket, {
+            "action": "redistribute",
+            "trace": trace,
+            "data": result,
+        })
 
     # -------------------------------------------------------------------------
     # Emit Loop (batch → sockets)

@@ -1,6 +1,7 @@
 
 
 
+
 import {OverlayScrollbars} from 'overlayscrollbars';
 
 import { ENumberFlow } from '@/utils/eNumberFlow.js';
@@ -34,13 +35,15 @@ import {EnhancedPayloadBatcher} from "@/global/enhancedPayloadBatcher.js";
 import {ArrowEngine, ArrowAgGridAdapter} from '@/grids/js/arrow/arrowEngine.js';
 import {virtualPortfolioColumns, realPortfolioColumns, generalPortfolioColumns} from '@/pt/js/grids/portfolio/portfolioColumns.js';
 import {SIG_FIGS_BY_QUOTE_TYPE} from '@/pt/js/grids/portfolioSigFigs.js';
-import {asyncMap, asyncForEach} from "modern-async";
+
 import PillManager from "@/global/js/pillManager.js";
 // import { ClientSummaryModal } from '@/grids/js/arrow/clientModal.js';
 
 import "../css/pt.css";
 import {ACTION_MAP} from "@/global/actionMap.js";
-import {MetaEditorModal} from "src/grids/js/metaEditorModal.js";
+import {MetaEditorModal} from "@/grids/js/metaEditorModal.js";
+import {MicroGridManager} from "@/global/js/microGridManager.js";
+import {MICRO_GRID_GROUPS} from "@/global/js/microGridConfigs.js";
 
 const VENUE_MEDIUM = {
     'BBG': 'BBG',
@@ -144,6 +147,8 @@ export class PortfolioPage extends PageBase {
         this._toolPanelIdx = 0;
         this._buttonPosition = 0;
 
+        // Micro-grid manager (initialized after page ready)
+        this._microGridManager = null;
     }
 
     async onBeforeInit() {
@@ -167,7 +172,8 @@ export class PortfolioPage extends PageBase {
             const metaData = adapter?._ptRaw?.context;
             const room = adapter.room;
 
-            const rows = await asyncMap(payloads, async (payload) => {
+            // Sync map — getRowObject is synchronous; asyncMap added needless Promise overhead per cell.
+            const rows = payloads.map((payload) => {
                 const { rowIndex, changes, engine } = payload;
                 const pks = engine.getRowObject(rowIndex, metaData.primary_keys);
                 return {...pks, ...changes};
@@ -679,6 +685,16 @@ export class PortfolioPage extends PageBase {
     async onInit() {
         this.context.settingsManager = new GridSettings(this.context);
         await this._setupWebSocketSubscriptions();
+        this._microGridManager = new MicroGridManager(this);
+
+        // Auto-resubscribe micro-grids on WebSocket reconnect
+        this._microReconnectCb = async () => {
+            if (this._microGridManager) {
+                this._microGridManager.showReconnectIndicator();
+                await this._microGridManager.resubscribeAll();
+            }
+        };
+        this.subscriptionManager().onReconnect(this._microReconnectCb);
     }
 
     async setupDynamicTooltips() {
@@ -792,6 +808,16 @@ export class PortfolioPage extends PageBase {
 
         // Central teardown handles engine, grid, pill, widgets, subs, emitter tokens
         this._teardownGrid();
+
+        // Cleanup micro-grid manager
+        if (this._microReconnectCb) {
+            try { this.subscriptionManager().offReconnect(this._microReconnectCb); } catch (e) { /* ignore */ }
+            this._microReconnectCb = null;
+        }
+        if (this._microGridManager) {
+            this._microGridManager.destroy().catch(() => {});
+            this._microGridManager = null;
+        }
 
         this.frameSkew.innerHTML = '';
         this.frameSkew.style.opacity = "0";
@@ -2639,6 +2665,30 @@ export class PortfolioPage extends PageBase {
         this.addEventListener(this.metaEdit, 'click', () => {
             if (this.metaEditor) this.metaEditor.open()
         })
+
+        // Hot Tickers / Micro-grid button
+        this._setupHotTickersButton();
+    }
+
+    _setupHotTickersButton() {
+        // Try to find an existing button, otherwise create one next to the settings button
+        let btn = document.getElementById('hot-tickers-btn');
+        if (!btn && this.settingsButton) {
+            btn = document.createElement('button');
+            btn.id = 'hot-tickers-btn';
+            btn.className = 'btn btn-xs btn-ghost';
+            btn.title = 'AI Tickers';
+            btn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>';
+            this.settingsButton.parentNode?.insertBefore(btn, this.settingsButton);
+        }
+        if (btn) {
+            this.addEventListener(btn, 'click', () => this.openHotTickers());
+        }
+    }
+
+    async openHotTickers() {
+        if (!this._microGridManager) return;
+        await this._microGridManager.openGroup(MICRO_GRID_GROUPS.pt_tools);
     }
 
     setupGridTools(){

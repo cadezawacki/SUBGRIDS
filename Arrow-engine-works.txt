@@ -1,4 +1,4 @@
-
+```
 
 import { license } from '@/config/licenses.js';
 import { LicenseManager, createGrid} from 'ag-grid-enterprise';
@@ -13,13 +13,14 @@ import {AgColumnRegistry, ArrowAgGridFilter, GlobalSearchManager, TypedArrayPool
 import {CLEAR_SENTINEL, coerceToNumber, formatNumber, coerceToDate, coerceToBool} from '@/utils/typeHelpers.js';
 import memoize from 'fast-memoize';
 import {LRUCache} from 'mnemonist';
+import sampleSize from 'lodash/sampleSize';
 import {installKeyCoalescer, isArrowKey, isTextInputTarget} from "@/grids/js/arrow/keyCoalescer.js";
 import {asyncForEach} from 'modern-async';
 import {writeObjectToClipboard, writeStringToClipboard} from "@/utils/clipboardHelpers.js";
 import {std, mean, median, quantileSeq} from 'mathjs';
 import {HyperTable} from '@/utils/hyperTable.js';
-import {PasteOverrideManager} from '@/grids/js/arrow/overrideManager.js';
 
+window.debouncePerArgs = debouncePerArgs;
 
 /* ---------------------------------- Tunables ---------------------------------- */
 
@@ -69,8 +70,8 @@ function isEditableCell(colDef, ctx) {
     if (colDef && typeof colDef.editable === 'function') {
         try { return !!colDef.editable(ctx); } catch { return false; }
     }
-    return !(colDef && colDef.editable === false);
-
+    if (colDef && colDef.editable === false) return false;
+    return true;
 }
 
 function makeCellEventPayload(baseEvent, rowNode, column, colDef, newValue) {
@@ -155,56 +156,13 @@ async function clearSelectedCellsOnDelete(e, adapter) {
     }
 }
 
-function _coerceOverlayNumber(value){
-    if (value === undefined) return undefined;
-    if (value === null) return null;
 
-    if (typeof value === 'number') return Number.isFinite(value) ? value : null;
-    if (typeof value === 'bigint'){
-        const n = Number(value);
-        return Number.isFinite(n) ? n : null;
-    }
-
-    let s0 = (typeof value === 'string') ? value : String(value);
-    s0 = s0.trim();
-    if (!s0) return null;
-
-    let mult = 1;
-    if (s0.charCodeAt(s0.length - 1) === 37){ // %
-        s0 = s0.slice(0, -1).trim();
-        if (!s0) return null;
-        mult = 0.01;
-    }
-
-    if (s0.charCodeAt(0) === 43) s0 = s0.slice(1); // leading '+'
-
-    // Remove common thousand separators only if present
-    if (
-        s0.indexOf(',') !== -1 ||
-        s0.indexOf(' ') !== -1 ||
-        s0.indexOf('\u00A0') !== -1 ||
-        s0.indexOf('_') !== -1
-    ){
-        s0 = s0.replace(/[\u00A0\s,](?=\d{3}\b)/g, '').replace(/_/g, '');
-    }
-
-    const n = Number(s0);
-    if (!Number.isFinite(n)) return null;
-
-    const out = n * mult;
-    return Number.isFinite(out) ? out : null;
-}
 
 function _coerceArrowScalar(v) {
     if (v === undefined) return null;
     if (v === CLEAR_SENTINEL) return null;
     if (typeof v === 'number' && !Number.isFinite(v)) return null;
-    if (typeof v === 'bigint') {
-        if (v > 9007199254740991n || v < -9007199254740991n) {
-            console.warn('_coerceArrowScalar: bigint exceeds Number.MAX_SAFE_INTEGER, precision loss:', v);
-        }
-        return Number(v);
-    }
+    if (typeof v === 'bigint') return Number(v);
     return v;
 }
 
@@ -250,10 +208,10 @@ function _tryConcatArrowTables(left, right) {
         const lv = left.getChildAt(i);
         const rv = right.getChildAt(i);
 
-        const ln = left.numRows >>> 0;
+        const ln = left.numRows | 0;
         for (let r = 0; r < ln; r++) b.append(_coerceArrowScalar(lv.get(r)));
 
-        const rn = right.numRows >>> 0;
+        const rn = right.numRows | 0;
         for (let r = 0; r < rn; r++) b.append(_coerceArrowScalar(rv.get(r)));
 
         outCols[f.name] = b.finish().toVector();
@@ -288,7 +246,7 @@ function ensureStyles(replace=false) {
     animation: agCopyPulse var(--agCopyFlashDur, ${FLASH_DURATION_MS}ms) ease-out forwards;
     transform: translateZ(0);
   }
-
+  
   /* Overlay elements (single rect or viewport blink) */
   .ag-copy-overlay {
     position: fixed;
@@ -324,6 +282,8 @@ function findGridRootForCurrentSelection(elementOrSelector=null) {
     return base.querySelector('.ag-root') || document.body;
 }
 
+window.findGridRootForCurrentSelection = findGridRootForCurrentSelection;
+
 function flashCellsCSS(elementOrSelector=null) {
     const root = findGridRootForCurrentSelection(elementOrSelector);
     if (!root) return;
@@ -341,26 +301,14 @@ let overlayMap = new Map();
 let overlayTimer = 0;
 
 function ensureOverlay(elementOrSelector) {
-    // Evict stale entries when map grows beyond expected working set
-    if (overlayMap.size > 16) {
-        for (const [k, el] of overlayMap) {
-            if (!document.body.contains(el)) { try { el.remove(); } catch {} overlayMap.delete(k); }
-        }
-    }
-    const existing = overlayMap.get(elementOrSelector);
-    if (existing) {
-        if (document.body.contains(existing)) return existing;
-        // Old element no longer in DOM — remove stale reference
-        try { existing.remove(); } catch {}
-        overlayMap.delete(elementOrSelector);
-    }
+    if (overlayMap.has(elementOrSelector) && document.body.contains(overlayMap.get(elementOrSelector))) return overlayMap.get(elementOrSelector);
     const overlayEl = document.createElement('div');
     overlayEl.className = 'ag-copy-overlay hidden';
     overlayEl.style.cssText = `
     top:0; left:0; width:0; height:0; opacity:${FLASH_OPACITY_START};
   `;
     document.body.appendChild(overlayEl);
-    overlayMap.set(elementOrSelector, overlayEl);
+    overlayMap.set(elementOrSelector, overlayEl)
     return overlayEl;
 }
 
@@ -490,7 +438,7 @@ function getConsecutiveFromMap(mp) {
     let currentCols = arr[0][1];
     for (let i = 1; i < arr.length; i++) {
         const isCon = arr[i][0] === (arr[i - 1][0] + 1);
-        const isMatch = currentCols.size === arr[i][1].size && [...currentCols].every(c => arr[i][1].has(c))
+        const isMatch = !(currentCols.difference(arr[i][1]).size + arr[i][1].difference(currentCols).size)
         if (isCon && isMatch) {
             currentSet.push(arr[i][0]);
         } else {
@@ -511,8 +459,8 @@ function diagonalJoin(...arrays) {
 }
 
 function diagonalJoinObj(obj1, obj2) {
-    if (!Object.keys(obj1).length) return obj2
-    if (!Object.keys(obj2).length) return obj1
+    if (!obj1.length) return obj2
+    if (!obj2.length) return obj1
     const entries1 = Object.entries(obj1);
     const entries2 = Object.entries(obj2);
 
@@ -538,10 +486,9 @@ function diagonalJoinObj(obj1, obj2) {
 export class MiniEmitter {
     constructor(){ this._m = new Map(); }
     on(ev, fn){ if(!this._m.has(ev)) this._m.set(ev, new Set()); this._m.get(ev).add(fn); return () => this.off(ev, fn); }
-    off(ev, fn){ try{ const s = this._m.get(ev); if(s){ s.delete(fn); if(s.size===0) this._m.delete(ev); } }catch{} }
-    emit(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}]:`, e); } } }
-    emitAsync(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; setTimeout(()=>{ for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}] async:`, e); } } }, 0); }
-    dispose(){ this._m.clear(); }
+    off(ev, fn){ try{ this._m.get(ev)?.delete(fn); }catch{} }
+    emit(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; for(const f of s){ try{ f(...args); }catch{} } }
+    emitAsync(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; queueMicrotask(()=>{ for(const f of s){ try{ f(...args); }catch{} } }); }
 }
 
 /* ---------------------------------- Edits ---------------------------------- */
@@ -588,14 +535,14 @@ class EditSignalCoalescer {
         this._sliceEntries = null;
         this._sliceIdx = 0;
         this._sliceOut = null;
-        this._sliceTStart = 0;
 
         this._inFlight = new Set();
         this._disposed = false;
 
         this._epoch = 0;
 
-        this._mc = null; // Disabled: MessageChannel fires before rendering, creating tight loops
+        this._mc = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
+        if (this._mc) this._mc.port1.onmessage = () => this._runSlice();
 
         this._stats = {
             cellsEnqueued: 0,
@@ -692,21 +639,13 @@ class EditSignalCoalescer {
         if (this.useRaf && typeof requestAnimationFrame === 'function') {
             this._rafId = requestAnimationFrame(() => {
                 this._rafId = null;
-                if (this._timeoutId !== null) { clearTimeout(this._timeoutId); this._timeoutId = null; }
                 this._beginFlush();
             });
-            // Safety net: if RAF is starved (e.g. tab backgrounded), setTimeout fires
-            this._timeoutId = setTimeout(() => {
-                this._timeoutId = null;
-                if (this._rafId !== null) { cancelAnimationFrame(this._rafId); this._rafId = null; }
-                this._beginFlush();
-            }, this.maxWaitMs);
-        } else {
-            this._timeoutId = setTimeout(() => {
-                this._timeoutId = null;
-                this._beginFlush();
-            }, this.maxWaitMs);
         }
+        this._timeoutId = setTimeout(() => {
+            this._timeoutId = null;
+            this._beginFlush();
+        }, this.maxWaitMs);
     }
 
     _flushNow() {
@@ -735,13 +674,12 @@ class EditSignalCoalescer {
         this._sliceEntries = Array.from(this._back.entries());
         this._sliceIdx = 0;
         this._sliceOut = [];
-        this._sliceTStart = t0;
 
         this._flushing = true;
-        this._runSlice();
+        this._runSlice(t0);
     }
 
-    _runSlice() {
+    _runSlice(tStart) {
         if (!this._flushing || this._disposed) return;
 
         const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -777,14 +715,13 @@ class EditSignalCoalescer {
         }
 
         if (this._sliceIdx < entries.length) {
-            // Use setTimeout instead of MessageChannel to yield to the event loop
-            // between slices, allowing rendering and input processing.
-            setTimeout(() => this._runSlice(), 0);
+            if (this._mc) this._mc.port1.postMessage(1);
+            else setTimeout(() => this._runSlice(), 0);
             return;
         }
 
         const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-        this._stats.lastFlushMs = t1 - (this._sliceTStart || t1);
+        this._stats.lastFlushMs = t1 - (tStart || t1);
 
         const batch = out;
         this._sliceEntries = null;
@@ -797,20 +734,9 @@ class EditSignalCoalescer {
             return;
         }
 
-        // Yield to the event loop BEFORE emitting, so the browser can render
-        // and process input.  emitAsync uses queueMicrotask which chains
-        // microtasks synchronously — without this yield, a cascade of
-        // microtasks (emit → handler → epoch → refreshServerSide → _getRows)
-        // can block the main thread indefinitely.
-        setTimeout(() => this._emitBatch(batch), 0);
-    }
-
-    _emitBatch(batch) {
-        if (this._disposed) return;
-
         const promises = [];
         try {
-            const p = this._emit ? this._emit(this.eventNameBatch, batch) : null;
+            const p = this._emit(this.eventNameBatch, batch);
             if (p && typeof p.then === 'function') promises.push(p);
         } catch (_) {}
 
@@ -818,7 +744,7 @@ class EditSignalCoalescer {
             for (let i = 0; i < batch.length; i++) {
                 const r = batch[i];
                 try {
-                    const p = this._emit ? this._emit(this.eventNamePerRow, r) : null;
+                    const p = this._emit(this.eventNamePerRow, r);
                     if (p && typeof p.then === 'function') promises.push(p);
                 } catch (_) {}
             }
@@ -833,7 +759,7 @@ class EditSignalCoalescer {
                     if (seenCols.has(col)) continue;
                     seenCols.add(col);
                     try {
-                        const p = this._emit ? this._emit(this.eventNamePerColumn, col) : null;
+                        const p = this._emit(this.eventNamePerColumn, col);
                         if (p && typeof p.then === 'function') promises.push(p);
                     } catch (_) {
                     }
@@ -847,12 +773,12 @@ class EditSignalCoalescer {
                 const cols = r.changes;
                 for (const col in cols) {
                     try {
-                        const p = this._emit ? this._emit('cell-edit', {
+                        const p = this._emit('cell-edit', {
                             rowIndex: r.rowIndex,
                             columnName: col,
                             value: cols[col],
                             engine: this.engine
-                        }) : null;
+                        });
                         if (p && typeof p.then === 'function') promises.push(p);
                     } catch (_) {}
                 }
@@ -862,7 +788,7 @@ class EditSignalCoalescer {
         if (this.emitEpochEvent) {
             this._epoch++;
             try {
-                const p = this._emit ? this._emit(this.epochEventName, this._epoch) : null;
+                const p = this._emit(this.epochEventName, this._epoch);
                 if (p && typeof p.then === 'function') promises.push(p);
             } catch (_) {}
         }
@@ -948,7 +874,7 @@ function projectTableToSchema(sourceTable, targetSchema) {
 
         const isBigIntLike =
             builderType instanceof arrow.Int64 ||
-            (builderType instanceof arrow.Int && (builderType.bitWidth === 64));
+            (builderType instanceof arrow.Int && builderType.bitWidth === 64);
 
         if (isBigIntLike) {
             builderType = new arrow.Float64();
@@ -1022,9 +948,7 @@ export class ArrowEngine {
             this._nameToIndex.set(nm, i);
             this._nameToVector.set(nm, table.getChildAt(i));
         }
-        this._fieldNamesCache = null;
-        this._fieldSetCache = null;
-        Object.defineProperty(this, '_fieldNames', { get() { return this._fieldNamesCache || (this._fieldNamesCache = Array.from(this._nameToIndex.keys())); } });
+        Object.defineProperty(this, '_fieldNames', { get: () => Array.from(this._nameToIndex.keys()) });
 
         this.columnDefs = new Map();
         this._idProperty = idProperty;
@@ -1037,7 +961,6 @@ export class ArrowEngine {
         this._scaleTimestampsToMs = !!scaleTimestampsToMs;
         this._yieldEvery = _toInt32(yieldEvery);
         this._autoCommitThreshold = +autoCommitThreshold;
-        this._autoCommitEditInterval = 20; // materialize every N physical edits; reset after each trigger
 
         this.timeUnitScale = Object.create(null);
         this._decoder = Object.create(null);
@@ -1057,12 +980,10 @@ export class ArrowEngine {
         this._editDrainScheduled = false;
 
         this.cellCacheSize = classCacheSize;
-        const cacheSz = Math.max(512, table.numCols * 128);
-        this._dictCacheMax = 512;
-        this._classCache = new LRUCache(cacheSz);
-        this._fmtCache = new LRUCache(cacheSz);
+        this._classCache = new LRUCache(table.numCols);
+        this._fmtCache = new LRUCache(table.numCols);
 
-        this._frozenOverrides = new Map();  // Map<colName, Set<rowIndex>> — fast freeze/unfreeze without string concat
+        this._frozenOverrides = new Set();
         this._idxMinMax = new Map();
         this._indexBlockSize = 2048;
 
@@ -1076,12 +997,9 @@ export class ArrowEngine {
         this._useEpochCache = !!useEpochCache;
         this._epochQueue = [];
         this._epochScheduled = false;
-        this._suppressEpochEmit = false;
         this._dtypes = null;
 
         this._pool = new TypedArrayPool();
-        this._sortedRowCache = new Map();
-        this._tableReplaceSeq = 0;
 
         this.emitter = this.context.page.emitter;
         this._em = new MiniEmitter();
@@ -1164,22 +1082,18 @@ export class ArrowEngine {
         const n = (this.table?.numRows | 0);
         if (n <= 0) return -1;
 
-        // Fast path: numeric ids that map directly to rowIndex.
+        // Fast path: numeric string ids that map directly to rowIndex.
         if (typeof rowId === 'number') {
             const ri = rowId | 0;
-            if (ri >= 0 && ri < n && ri === rowId) {
+            if (ri >= 0 && ri < n) {
                 const candidate = this._rowIdGetter(ri, this);
                 if (candidate === String(ri)) return ri;
             }
-        } else if (typeof rowId === 'string' && rowId.length > 0) {
-            // Only attempt fast path if the string looks purely numeric
-            const parsed = +rowId;
-            if (Number.isFinite(parsed)) {
-                const ri = parsed | 0;
-                if (ri >= 0 && ri < n && String(ri) === rowId) {
-                    const candidate = this._rowIdGetter(ri, this);
-                    if (candidate === rowId) return ri;
-                }
+        } else if (typeof rowId === 'string') {
+            const ri = rowId.length ? (rowId | 0) : -1;
+            if (ri >= 0 && ri < n && String(ri) === rowId) {
+                const candidate = this._rowIdGetter(ri, this);
+                if (candidate === rowId) return ri;
             }
         }
 
@@ -1199,7 +1113,7 @@ export class ArrowEngine {
     _emitMaterialize(rows, cols){ this._em.emitAsync('table-materialized', rows, cols); }
     _notifyDerivedDirty(name){ this._em.emitAsync('derived-dirty', new Set(asArray(name))); }
     _notifyColumnChanged(columns){
-        if (!columns) return;
+        return
         const distinct = new Set(asArray(columns));
         distinct.forEach(col => {
             this._em.emitAsync(`column-changed-${this._normalizeColumnSelector(col)}`)
@@ -1210,64 +1124,22 @@ export class ArrowEngine {
         this._em.emitAsync(`grid:ColumnEvent-${event}`)
     }
     onColumnEvent(event, fn) {this._em.on(`grid:ColumnEvent-${event}`, fn);}
-    onTableWillReplace(fn){return this._em.on('table-will-replace', fn);}
-    onTableDidReplace(fn){return this._em.on('table-did-replace', fn);}
-    _emitEpochChange(payload, event='epoch-change') {
-        // Suppress epoch emissions triggered as side-effects of _handleEpoch
-        // (e.g. _getRows → grid$.set → settings listener → _bumpColEpochByName).
-        // These are rendering reflections, not new data — re-emitting them causes
-        // an infinite cycle: _handleEpoch → refreshServerSide → _getRows → grid$.set
-        // → settings onChanges → _bumpColEpochByName → _emitEpochChange → _handleEpoch → ∞
-        if (this._suppressEpochEmit) return;
 
+    _emitEpochChange(payload, event='epoch-change') {
         this._epochQueue.push(payload);
         if (!this._epochScheduled) {
             this._epochScheduled = true;
-            setTimeout(() => {
-                const batch = this._epochQueue;
-                this._epochQueue = [];
+            queueMicrotask(() => {
+                const batch = this._epochQueue.splice(0);
                 this._epochScheduled = false;
-                if (this._disposed || !this._em) return;
                 const coalesced = this._coalesceEpochs(batch);
                 this._em.emitAsync(event, coalesced);
-            }, 0);
+            });
         }
-    }
-
-    _emitTableWillReplace(prevTable, nextTable){
-        try {
-            const prevNumRows = prevTable ? (prevTable.numRows | 0) : 0;
-            const nextNumRows = nextTable ? (nextTable.numRows | 0) : 0;
-            const prevNumCols = prevTable ? (prevTable.numCols | 0) : 0;
-            const nextNumCols = nextTable ? (nextTable.numCols | 0) : 0;
-            this._em.emit('table-will-replace', { prevNumRows, nextNumRows, prevNumCols, nextNumCols });
-        } catch {}
-    }
-
-    _emitTableDidReplace(prevTable, nextTable){
-        try {
-            const prevNumRows = prevTable ? (prevTable.numRows | 0) : 0;
-            const nextNumRows = nextTable ? (nextTable.numRows | 0) : 0;
-            const prevNumCols = prevTable ? (prevTable.numCols | 0) : 0;
-            const nextNumCols = nextTable ? (nextTable.numCols | 0) : 0;
-            this._em.emitAsync('table-did-replace', { prevNumRows, nextNumRows, prevNumCols, nextNumCols });
-        } catch {}
     }
 
     _coalesceEpochs(batch) {
         if (!Array.isArray(batch) || batch.length === 0) return { colsChanged: null, rowsChanged: null };
-
-        // Fast path: single-element batch (the overwhelmingly common case)
-        if (batch.length === 1) {
-            const p = batch[0] || {};
-            if (p.global) return { global: true };
-            // Normalize colsChanged: _bumpCellEpochByName passes a bare string,
-            // but downstream normalizeCols expects an Array (Array.from(string)
-            // splits into characters, breaking column lookups).
-            let c = p.colsChanged ?? null;
-            if (typeof c === 'string') c = [c];
-            return { colsChanged: c, rowsChanged: p.rowsChanged ?? null };
-        }
 
         let global = false;
         const cols = new Set();
@@ -1363,11 +1235,10 @@ export class ArrowEngine {
     }
 
     _getDecoder(name){
+        if (!this._decodeDictionaries) return null;
         if (this._decoder[name] != null) return this._decoder[name];
-        const vec = this._getVector(name);
-        const d = this._decodeDictionaries ? this._buildDictionaryDecoder(vec) : null;
-        this._decoder[name] = d;
-        return d;
+        const d = this._buildDictionaryDecoder(this._getVector(name));
+        this._decoder[name] = d; return d;
     }
 
     _isDerived(name){ return this._derived.has(name); }
@@ -1443,12 +1314,12 @@ export class ArrowEngine {
     schema(){ return this.table.schema; }
     getRowCount() {return this.numRows()}
 
-    fields() { return this._fieldNames; }
+    fields() { return this.schema().fields.map(f => f.name) }
     _get_dtypes() { return this.schema().fields.reduce((m, f) => {
         m.set(f.name, f.type);
         return m
     }, new Map([]))};
-    fieldSet() { if (!this._fieldSetCache) this._fieldSetCache = new Set(this._fieldNames); return this._fieldSetCache; }
+    fieldSet() { return new Set(this.fields())}
 
     dtypes() {
         if (!this._dtypes) this._dtypes = this._get_dtypes();
@@ -1568,27 +1439,13 @@ export class ArrowEngine {
                 : { kind: 'other', map: new Map(), size: 0 };
             this._overlays.set(name, ov);
             return ov;
-        } catch (e) {
-            console.error(e);
-            // Return a safe fallback to prevent null-deref in callers.
-            const fallback = { kind: 'other', map: new Map(), size: 0 };
-            this._overlays.set(name, fallback);
-            return fallback;
-        }
+        } catch (e) { console.error(e); }
     }
 
     _overlayHas(ov, ri){
         if (!ov) return false;
-
-        if (ov.kind === 'number'){
-            const mask = ov.mask;
-            if (!mask) return false;
-            if (ri < 0 || ri >= mask.length) return false;
-            return mask[ri] !== MASK_NONE;
-        }
-
-        const mp = ov.map;
-        return !!(mp && mp.has(ri));
+        if (ov.kind === 'number') return !!(ov.mask && ov.mask[ri] !== MASK_NONE);
+        const map = ov.map; return !!(map && map.has(ri));
     }
 
     _overlayGet(ov, ri){
@@ -1602,64 +1459,32 @@ export class ArrowEngine {
     }
 
     _overlaySet(ov, ri, value){
-        if (!ov) return;
+        const toNum = (v)=>{
+            if (v === undefined) return { k:'unset' };
+            if (v === null) return { k:'null' };
+            if (typeof v === 'number') return Number.isFinite(v) ? { k:'num', n:v } : { k:'null' };
+            const s0 = String(v).trim();
+            if (s0 === '') return { k:'null' };
+            const isPct = /%$/.test(s0);
+            const core = (isPct ? s0.slice(0,-1) : s0).trim().replace(/[\u00A0\s,](?=\d{3}\b)/g, '').replace(/^\+/, '');
+            const n = Number(core);
+            return Number.isFinite(n) ? { k:'num', n: isPct? (n/100) : n } : { k:'null' };
+        };
 
         if (ov.kind === 'number'){
-            const mask = ov.mask;
-            const vals = ov.values;
-            if (!mask || !vals) return;
-            if (ri < 0 || ri >= mask.length) return;
-
-            const prev = mask[ri];
-
-            if (value === undefined){
-                if (prev !== MASK_NONE){
-                    mask[ri] = MASK_NONE;
-                    if (prev === MASK_VALUE) vals[ri] = 0;
-                    ov.size = ov.size > 0 ? (ov.size - 1) : 0;
-                }
-                return;
-            }
-
-            if (value === null){
-                if (prev === MASK_NONE) ov.size++;
-                mask[ri] = MASK_NULL;
-                return;
-            }
-
-            const num = _coerceOverlayNumber(value);
-            if (num === null || num === undefined){
-                if (prev === MASK_NONE) ov.size++;
-                mask[ri] = MASK_NULL;
-                return;
-            }
-
-            if (prev === MASK_NONE) ov.size++;
-            mask[ri] = MASK_VALUE;
-            vals[ri] = num;
+            const prev = ov.mask[ri];
+            const cv = toNum(value);
+            if (cv.k === 'unset'){ if (prev !== MASK_NONE){ ov.mask[ri]=MASK_NONE; ov.size--; } return; }
+            if (cv.k === 'null'){ if (prev===MASK_NONE) ov.size++; ov.mask[ri]=MASK_NULL; return; }
+            ov.values[ri] = cv.n;
+            if (prev===MASK_NONE) ov.size++;
+            ov.mask[ri] = MASK_VALUE;
             return;
         }
 
-        const mp = ov.map;
-        if (!mp) return;
-
-        if (value === undefined){
-            if (mp.delete(ri)){
-                ov.size = ov.size > 0 ? (ov.size - 1) : 0;
-            }
-            return;
-        }
-
-        if (!mp.has(ri)){
-            mp.set(ri, value);
-            ov.size++;
-            return;
-        }
-
-        const prev = mp.get(ri);
-        if (prev !== value){
-            mp.set(ri, value);
-        }
+        const mp = ov.map || (ov.map = new Map());
+        if (value === undefined){ if (mp.delete(ri)) ov.size--; }
+        else { if (!mp.has(ri)) ov.size++; mp.set(ri, value); }
     }
 
     setOverlayValue(rowIndex, column, value, {bump=true}={}){
@@ -1672,254 +1497,69 @@ export class ArrowEngine {
     }
 
     setOverlayValuesByColumnBatch(column, rowIndices, values, { freeze = false, bump = true } = {}) {
-        let name;
-        try {
-            name = this._normalizeColumnSelector(column)[0];
-        } catch {
-            return { applied: 0, rowsChanged: new Int32Array(0) };
-        }
-
-        const known =
-            this._nameToVector.has(name) ||
-            this._derived.has(name) ||
-            this.columnDefs.has(name);
-
-        if (!known) return { applied: 0, rowsChanged: new Int32Array(0) };
-
+        const name = this._normalizeColumnSelector(column)[0];
         const ov = this._ensureOverlay(name);
-        if (!ov) return { applied: 0, rowsChanged: new Int32Array(0) };
-
-        const vals = values || [];
-        const valsLen = vals.length | 0;
-
-        if (!rowIndices || valsLen === 0) return { applied: 0, rowsChanged: new Int32Array(0) };
-
-        const rowCount = this.numRows() | 0;
-
-        // Prefer zero-allocation path when caller already provides Int32Array.
-        const rowsIsI32 = rowIndices instanceof Int32Array;
-        const rowsSrc = rowsIsI32 ? rowIndices : (Array.isArray(rowIndices) ? rowIndices : Array.from(rowIndices || []));
-        const rowsLen = rowsSrc.length | 0;
-
-        const n0 = Math.min(rowsLen, valsLen) | 0;
-        if (n0 === 0) return { applied: 0, rowsChanged: new Int32Array(0) };
-
         const isNumber = ov.kind === 'number';
+        const rows = (rowIndices instanceof Int32Array) ? rowIndices : Int32Array.from(rowIndices || []);
+        const n = rows.length | 0;
 
-        let rowsOut = null;
-        let outCount = 0;
-        let copying = !rowsIsI32; // non-I32 always uses rowsOut for safety
-
-        if (copying) rowsOut = new Int32Array(n0);
-
-        // Reusable result object to avoid per-cell allocation in the hot loop.
-        const _cnfResult = { kind: 0, num: 0 };
-        const coerceNumberFast = (v) => {
-            // mutates and returns _cnfResult: kind 0=unset, 1=null, 2=value
-            if (v === undefined) { _cnfResult.kind = 0; _cnfResult.num = 0; return _cnfResult; }
-            if (v === null) { _cnfResult.kind = 1; _cnfResult.num = 0; return _cnfResult; }
-
-            if (typeof v === 'number') {
-                if (Number.isFinite(v)) { _cnfResult.kind = 2; _cnfResult.num = v; }
-                else { _cnfResult.kind = 1; _cnfResult.num = 0; }
-                return _cnfResult;
-            }
-            if (typeof v === 'bigint') {
-                const n = Number(v);
-                if (Number.isFinite(n)) { _cnfResult.kind = 2; _cnfResult.num = n; }
-                else { _cnfResult.kind = 1; _cnfResult.num = 0; }
-                return _cnfResult;
-            }
-
-            let s0 = String(v).trim();
-            if (s0 === '') { _cnfResult.kind = 1; _cnfResult.num = 0; return _cnfResult; }
-
-            let isPct = false;
-            if (s0.charCodeAt(s0.length - 1) === 37) { // '%'
-                isPct = true;
-                s0 = s0.slice(0, -1).trim();
-                if (s0 === '') { _cnfResult.kind = 1; _cnfResult.num = 0; return _cnfResult; }
-            }
-
-            if (s0.charCodeAt(0) === 43) s0 = s0.slice(1); // '+'
-
-            // Only pay regex when we see separators.
-            if (s0.indexOf(',') >= 0 || s0.indexOf(' ') >= 0 || s0.indexOf('\u00A0') >= 0) {
-                s0 = s0.replace(/[\u00A0\s,](?=\d{3}\b)/g, '');
-            }
-
-            const n = Number(s0);
-            if (!Number.isFinite(n)) { _cnfResult.kind = 1; _cnfResult.num = 0; return _cnfResult; }
-            _cnfResult.kind = 2;
-            _cnfResult.num = isPct ? (n / 100) : n;
-            return _cnfResult;
-        };
+        if (n === 0) return { applied: 0, rowsChanged: new Int32Array(0) };
 
         if (isNumber) {
-            const mask = ov.mask;
-            const valsArr = ov.values;
-
-            for (let i = 0; i < n0; i++) {
-                let ri;
-
-                if (rowsIsI32) {
-                    ri = rowsSrc[i] | 0;
-                    if (ri < 0 || ri >= rowCount) {
-                        if (!copying) {
-                            copying = true;
-                            rowsOut = new Int32Array(n0);
-                            for (let j = 0; j < i; j++) rowsOut[outCount++] = rowsSrc[j] | 0;
-                        }
-                        continue;
-                    }
-                } else {
-                    const raw = rowsSrc[i];
-                    if (typeof raw === 'number') {
-                        if (!Number.isFinite(raw)) continue;
-                        ri = raw | 0;
-                        if (ri !== raw) continue;
-                    } else if (typeof raw === 'string') {
-                        const t = raw.trim();
-                        if (!t) continue;
-                        ri = t | 0;
-                        if (t !== String(ri)) continue;
-                    } else {
-                        continue;
-                    }
-                    if (ri < 0 || ri >= rowCount) continue;
-                }
-
-                const cv = coerceNumberFast(vals[i]);
-                const prev = mask[ri] | 0;
-
-                if (cv.kind === 0) { // unset
-                    if (prev !== MASK_NONE) { mask[ri] = MASK_NONE; ov.size--; if (ov.size < 0) ov.size = 0; }
-                } else if (cv.kind === 1) { // null
-                    if (prev === MASK_NONE) ov.size++;
-                    mask[ri] = MASK_NULL;
-                } else { // value
-                    valsArr[ri] = cv.num;
-                    if (prev === MASK_NONE) ov.size++;
-                    mask[ri] = MASK_VALUE;
-                }
-
-                if (copying) rowsOut[outCount++] = ri;
+            const mask = ov.mask, vals = ov.values;
+            for (let i = 0; i < n; i++) {
+                const ri = rows[i] | 0;
+                const v = values[i];
+                if (v === undefined) { if (mask[ri] !== 0) { mask[ri] = 0; ov.size--; } continue; }
+                if (v === null)      { if (mask[ri] === 0) ov.size++; mask[ri] = 1; continue; }
+                vals[ri] = +v;
+                if (mask[ri] === 0) ov.size++;
+                mask[ri] = 2;
             }
         } else {
             const mp = ov.map || (ov.map = new Map());
-
-            for (let i = 0; i < n0; i++) {
-                let ri;
-
-                if (rowsIsI32) {
-                    ri = rowsSrc[i] | 0;
-                    if (ri < 0 || ri >= rowCount) {
-                        if (!copying) {
-                            copying = true;
-                            rowsOut = new Int32Array(n0);
-                            for (let j = 0; j < i; j++) rowsOut[outCount++] = rowsSrc[j] | 0;
-                        }
-                        continue;
-                    }
-                } else {
-                    const raw = rowsSrc[i];
-                    if (typeof raw === 'number') {
-                        if (!Number.isFinite(raw)) continue;
-                        ri = raw | 0;
-                        if (ri !== raw) continue;
-                    } else if (typeof raw === 'string') {
-                        const t = raw.trim();
-                        if (!t) continue;
-                        ri = t | 0;
-                        if (t !== String(ri)) continue;
-                    } else {
-                        continue;
-                    }
-                    if (ri < 0 || ri >= rowCount) continue;
-                }
-
-                const v = vals[i];
-                if (v === undefined) {
-                    if (mp.delete(ri)) { ov.size--; if (ov.size < 0) ov.size = 0; }
-                } else {
-                    if (!mp.has(ri)) ov.size++;
-                    mp.set(ri, v);
-                }
-
-                if (copying) rowsOut[outCount++] = ri;
+            for (let i = 0; i < n; i++) {
+                const ri = rows[i] | 0;
+                const v = values[i];
+                if (v === undefined) { if (mp.delete(ri)) ov.size--; continue; }
+                if (!mp.has(ri)) ov.size++;
+                mp.set(ri, v);
             }
         }
 
-        const rowsChanged = copying ? ((outCount && rowsOut) ? rowsOut.subarray(0, outCount) : new Int32Array(0))
-            : rowsSrc.subarray(0, n0);
-
-        if ((rowsChanged.length | 0) === 0) return { applied: 0, rowsChanged: new Int32Array(0) };
-
         // Freeze derived cells when asked
         if (freeze && this._isDerived(name)) {
-            for (let i = 0; i < rowsChanged.length; i++) this._markFrozen(name, rowsChanged[i] | 0);
+            for (let i = 0; i < n; i++) this._markFrozen(name, rows[i] | 0);
         }
 
         // Unfreeze dependents once per row if base column is physical
         if (this._nameToVector.has(name)) {
-            for (let i = 0; i < rowsChanged.length; i++) this._unfreezeDependentsOnChange(name, rowsChanged[i] | 0);
+            for (let i = 0; i < n; i++) this._unfreezeDependentsOnChange(name, rows[i] | 0);
         }
 
-        if (bump) this._emitEpochChange({ rowsChanged, colsChanged: name });
-        return { applied: rowsChanged.length | 0, rowsChanged };
+        if (bump) this._emitEpochChange({ rowsChanged: rows, colsChanged: name });
+        return { applied: n, rowsChanged: rows };
     }
 
     setOverlayValuesByRowBatch(rowIndex, changes, { freezeDerived = true, bump = true } = {}) {
         const ri = rowIndex | 0;
-        const n = this.numRows() | 0;
-        if (ri < 0 || ri >= n) return { applied: 0, colsChanged: [] };
-        if (!changes) return { applied: 0, colsChanged: [] };
+        if (!changes || typeof changes !== 'object') return { applied: 0, colsChanged: [] };
 
         const changedCols = new Set();
-
-        const applyOne = (name, v) => {
-            if (!name) return;
-
-            const known =
-                this._nameToVector.has(name) ||
-                this._derived.has(name) ||
-                this.columnDefs.has(name);
-
-            if (!known) return;
-
+        const names = Object.keys(changes);
+        for (let i = 0; i < names.length; i++) {
+            const name = names[i];
+            const v = changes[name];
             const ov = this._ensureOverlay(name);
-            if (!ov) return;
-
             this._overlaySet(ov, ri, v);
             changedCols.add(name);
 
             if (freezeDerived && this._isDerived(name)) this._markFrozen(name, ri);
             if (this._nameToVector.has(name)) this._unfreezeDependentsOnChange(name, ri);
-        };
-
-        if (changes instanceof Map) {
-            for (const [k, v] of changes.entries()) applyOne(String(k), v);
-        } else if (Array.isArray(changes)) {
-            for (let i = 0; i < changes.length; i++) {
-                const pair = changes[i];
-                if (!pair || pair.length < 2) continue;
-                applyOne(String(pair[0]), pair[1]);
-            }
-        } else if (typeof changes === 'object') {
-            const names = Object.keys(changes);
-            for (let i = 0; i < names.length; i++) {
-                const name = names[i];
-                applyOne(name, changes[name]);
-            }
-        } else {
-            return { applied: 0, colsChanged: [] };
         }
 
-        const colsChanged = Array.from(changedCols);
-        if (colsChanged.length === 0) return { applied: 0, colsChanged: [] };
-
-        if (bump) this._emitEpochChange({ rowsChanged: [ri], colsChanged });
-        return { applied: colsChanged.length, colsChanged };
+        if (bump) this._emitEpochChange({ rowsChanged: [ri], colsChanged: Array.from(changedCols) });
+        return { applied: names.length, colsChanged: Array.from(changedCols) };
     }
 
     clearOverlayValue(rowIndex, column, {bump=true}={}){
@@ -2019,9 +1659,8 @@ export class ArrowEngine {
             } catch {}
         };
 
-        // Use setTimeout to yield to the event loop — queueMicrotask would
-        // chain synchronously with the epoch/emit microtask cascade.
-        setTimeout(run, 0);
+        if (typeof queueMicrotask === 'function') queueMicrotask(run);
+        else setTimeout(run, 0);
     }
 
     getEditHandler(name) {
@@ -2055,7 +1694,7 @@ export class ArrowEngine {
     }
 
     _numericDt(x){
-        return (x === 'number') || (x === 'integer') || (x === 'float') || (x === 'percentage') || (x === 'currency')
+        return (x === 'number') || (x === 'integer') || (x === 'float') || (x === 'percentage')
     }
 
     async applyValue(rowIndex, column, raw, colDef){
@@ -2128,8 +1767,8 @@ export class ArrowEngine {
             }
 
             // Physical persist (default path)
-            // persistEdit already calls _bumpCellEpochByName + _unfreezeDependentsOnChange
             await this.persistEdit(rowIndex, col, isClear ? null : value);
+            if (bumpSource) this._bumpCellEpochByName(rowIndex, col);
         }
         return true;
     }
@@ -2139,11 +1778,9 @@ export class ArrowEngine {
         if (ops.length === 0) return tracker;
 
         const suppressEditSignals = opts?.suppressEditSignals === true;
-        const deferUnfreeze = opts?.deferUnfreeze === true;
 
         const changedCols = tracker.changedCols || (tracker.changedCols = new Set());
         const changedRows = tracker.changedRows || (tracker.changedRows = new Set());
-        const physicalCols = deferUnfreeze ? (tracker.physicalCols || (tracker.physicalCols = new Set())) : null;
 
         const ri = (rowIndex | 0);
         let broadcasted = false;
@@ -2173,10 +1810,7 @@ export class ArrowEngine {
                 }
                 changedCols.add(col);
                 changedRows.add(ri);
-                if (isPhysical) {
-                    if (deferUnfreeze) physicalCols.add(col);
-                    else this._unfreezeDependentsOnChange(col, ri);
-                }
+                if (isPhysical) this._unfreezeDependentsOnChange(col, ri);
                 continue;
             }
 
@@ -2196,13 +1830,9 @@ export class ArrowEngine {
 
             const ov = this._ensureOverlay(col);
             this._overlaySet(ov, ri, value);
+            this._unfreezeDependentsOnChange(col, ri);
             changedCols.add(col);
             changedRows.add(ri);
-
-            if (isPhysical) {
-                if (deferUnfreeze) physicalCols.add(col);
-                else this._unfreezeDependentsOnChange(col, ri);
-            }
 
             try {
                 if (!suppressEditSignals) {
@@ -2217,115 +1847,26 @@ export class ArrowEngine {
     }
 
     /* --------------------------- freeze / unfreeze --------------------------- */
-    _markFrozen(name, rowIndex){
-        let set = this._frozenOverrides.get(name);
-        if (!set) { set = new Set(); this._frozenOverrides.set(name, set); }
-        set.add(rowIndex | 0);
-    }
-    _isFrozen(name, rowIndex){
-        const set = this._frozenOverrides.get(name);
-        return set ? set.has(rowIndex | 0) : false;
-    }
+    _markFrozen(name, rowIndex){ this._frozenOverrides.add(`${name}::${rowIndex|0}`); }
+    _isFrozen(name, rowIndex){ return this._frozenOverrides.has(`${name}::${rowIndex|0}`); }
     _unfreeze(name, rowIndex){
-        const set = this._frozenOverrides.get(name);
-        if (set && set.delete(rowIndex | 0)) {
-            if (set.size === 0) this._frozenOverrides.delete(name);
-            this.clearOverlayValue(rowIndex | 0, name, { bump: false });
-            this._bumpCellEpochByName(rowIndex | 0, name);
+        const k = `${name}::${rowIndex|0}`;
+        if (this._frozenOverrides.delete(k)){
+            this.clearOverlayValue(rowIndex|0, name);
+            this._bumpCellEpochByName(rowIndex|0, name);
         }
     }
     _unfreezeAllFrozenFor(name){
-        const set = this._frozenOverrides.get(name);
-        if (!set || set.size === 0) return;
-        const rows = Array.from(set);
-        this._frozenOverrides.delete(name);
-        for (let i = 0; i < rows.length; i++) {
-            this.clearOverlayValue(rows[i], name, { bump: false });
-            this._bumpCellEpochByName(rows[i], name);
+        if (this._frozenOverrides.size === 0) return;
+        const prefix = name + '::';
+        const toClear = [];
+        for (const key of this._frozenOverrides) if (key.startsWith(prefix)) toClear.push(key);
+        for (let i=0;i<toClear.length;i++){
+            const k = toClear[i]; this._frozenOverrides.delete(k);
+            const ri = _toInt32(k.slice(prefix.length));
+            this.clearOverlayValue(ri, name);
+            this._bumpCellEpochByName(ri, name);
         }
-    }
-    _freeAllFrozen({ trimToRowCount = null, trimUnknownColumns = true, clearOverlays = false, bump = false, clearAll = false } = {}){
-        const frozen = this._frozenOverrides;
-        if (!frozen || frozen.size === 0) return 0;
-
-        const n = (trimToRowCount == null) ? (this.table ? (this.table.numRows | 0) : -1) : (trimToRowCount | 0);
-
-        // Optional "nuke" mode (off by default).
-        if (clearAll === true) {
-            let removed = 0;
-            if (clearOverlays) {
-                for (const [col, rowSet] of frozen) {
-                    const ov = this._overlays.get(col);
-                    if (!ov || !rowSet || rowSet.size === 0) { removed += rowSet ? rowSet.size : 0; continue; }
-                    removed += rowSet.size;
-                    if (ov.kind === 'number') {
-                        const mask = ov.mask;
-                        if (!mask) continue;
-                        for (const ri of rowSet) {
-                            const prev = mask[ri] | 0;
-                            if (prev !== MASK_NONE) { mask[ri] = MASK_NONE; ov.size--; }
-                        }
-                        if (ov.size < 0) ov.size = 0;
-                    } else {
-                        const mp = ov.map;
-                        if (!mp) continue;
-                        for (const ri of rowSet) {
-                            if (mp.delete(ri)) ov.size--;
-                        }
-                        if (ov.size < 0) ov.size = 0;
-                    }
-                }
-            } else {
-                for (const [, rowSet] of frozen) removed += rowSet ? rowSet.size : 0;
-            }
-            frozen.clear();
-            if (bump) this._emitEpochChange({ rowsChanged: true, colsChanged: true });
-            return removed;
-        }
-
-        let removed = 0;
-        const hasVec = this._nameToVector;
-        const hasDer = this._derived;
-        const hasDef = this.columnDefs;
-        const colsToDelete = [];
-
-        for (const [col, rowSet] of frozen) {
-            // Check if entire column should be dropped
-            if (trimUnknownColumns === true && !(hasVec.has(col) || hasDer.has(col) || hasDef.has(col))) {
-                if (clearOverlays) {
-                    const ov = this._overlays.get(col);
-                    if (ov) {
-                        for (const ri of rowSet) this._overlaySet(ov, ri, undefined);
-                    }
-                }
-                removed += rowSet.size;
-                colsToDelete.push(col);
-                continue;
-            }
-
-            // Trim out-of-bounds rows within the column
-            if (n >= 0) {
-                const badRows = [];
-                for (const ri of rowSet) {
-                    if (ri < 0 || ri >= n) badRows.push(ri);
-                }
-                if (badRows.length > 0) {
-                    for (let i = 0; i < badRows.length; i++) {
-                        rowSet.delete(badRows[i]);
-                        if (clearOverlays) {
-                            const ov = this._overlays.get(col);
-                            if (ov) this._overlaySet(ov, badRows[i], undefined);
-                        }
-                    }
-                    removed += badRows.length;
-                    if (rowSet.size === 0) colsToDelete.push(col);
-                }
-            }
-        }
-
-        for (let i = 0; i < colsToDelete.length; i++) frozen.delete(colsToDelete[i]);
-        if (removed && bump) this._emitEpochChange({ rowsChanged: true, colsChanged: true });
-        return removed;
     }
     _unfreezeDependentsOnChange(baseColName, rowIndex){
         if (this._frozenOverrides.size === 0) return;
@@ -2339,46 +1880,6 @@ export class ArrowEngine {
                 if (this._isFrozen(d, rowIndex)) this._unfreeze(d, rowIndex);
             }
         }
-    }
-
-    /**
-     * Batch-unfreeze all derived dependents for a set of physical columns and rows.
-     * Unlike _unfreezeDependentsOnChange (which is called per-column per-row and emits
-     * per-cell epoch bumps), this method:
-     *   1. Computes the union of all derived dependents ONCE
-     *   2. Clears frozen overlays in bulk WITHOUT individual epoch bumps
-     *   3. Caller is responsible for emitting ONE coalesced epoch afterward
-     *
-     * This eliminates O(cols × rows × deps) string-concat + epoch-bump overhead.
-     */
-    _batchUnfreezeDependents(physicalCols, rowIndices) {
-        if (this._frozenOverrides.size === 0) return;
-
-        // Collect the union of all derived dependents across all changed physical cols
-        const derivedDeps = new Set();
-        for (const col of physicalCols) {
-            const deps = this.getDependentsClosure(col) || [];
-            for (let i = 0; i < deps.length; i++) {
-                if (this._derived.has(deps[i])) derivedDeps.add(deps[i]);
-            }
-        }
-        if (derivedDeps.size === 0) return;
-
-        // For each derived dependent, unfreeze affected rows without epoch bumps
-        for (const dep of derivedDeps) {
-            const frozenSet = this._frozenOverrides.get(dep);
-            if (!frozenSet || frozenSet.size === 0) continue;
-
-            const ov = this._overlays.get(dep);
-            for (const ri of rowIndices) {
-                if (frozenSet.delete(ri)) {
-                    // Clear overlay inline (skip clearOverlayValue overhead)
-                    if (ov) this._overlaySet(ov, ri, undefined);
-                }
-            }
-            if (frozenSet.size === 0) this._frozenOverrides.delete(dep);
-        }
-        // NO epoch bumps — caller emits one coalesced epoch
     }
 
     /* ----------------------------- derived columns --------------------------- */
@@ -2561,6 +2062,7 @@ export class ArrowEngine {
         while (stack.length) {
             const current = stack.pop();
             let cached = this._depClosureCache.get(current);
+            cached = null // DEBUG TODO
 
             if (!cached) {
                 cached = new Set();
@@ -2652,85 +2154,29 @@ export class ArrowEngine {
 
     /* ---------------------------- materialize edits -------------------------- */
     async materializeEdits({ commit = 'auto' } = {}) {
-        if (this._disposed) return this.table;
         if (this._materializeTimer) {
             clearTimeout(this._materializeTimer);
             this._materializeTimer = null;
         }
-        if (!this._materializeResolvers) this._materializeResolvers = [];
         return new Promise((resolve) => {
-            this._materializeResolvers.push(resolve);
             this._materializeTimer = setTimeout(async () => {
                 this._materializeTimer = null;
-                const resolvers = this._materializeResolvers;
-                this._materializeResolvers = [];
-                try {
-                    const result = await this._materializeEdits({ commit });
-                    for (let i = 0; i < resolvers.length; i++) resolvers[i](result);
-                } catch (e) {
-                    // Ensure all waiters resolve even on failure to prevent dangling promises
-                    for (let i = 0; i < resolvers.length; i++) resolvers[i](this.table);
-                }
+                const result = await this._materializeEdits({ commit });
+                resolve(result);
             }, 200);
         });
     }
 
-    async _materializeEdits({ commit = 'auto', columns: scopeCols = null } = {}) {
-        // Reentrancy guard: if already materializing, queue this call and
-        // resolve when the current run finishes (it will drain the queue).
-        if (this._isMaterializing) {
-            return new Promise((resolve) => {
-                if (!this._materializeQueue) this._materializeQueue = [];
-                this._materializeQueue.push({ commit, scopeCols, resolve });
-            });
-        }
+    async _materializeEdits({ commit = 'auto' } = {}) {
         this._isMaterializing = true;
 
-        try {
-            return this._materializeEditsInner(commit, scopeCols);
-        } finally {
-            // Drain queued requests: merge all pending scopes and run once more.
-            if (this._materializeQueue && this._materializeQueue.length) {
-                const queued = this._materializeQueue.splice(0);
-                // Merge: if ANY queued call wants commit:true, use true.
-                // Merge scope columns: union of all scoped columns (null = all).
-                let mergedCommit = commit;
-                let mergedScope = scopeCols ? new Set(scopeCols) : null;
-                for (let i = 0; i < queued.length; i++) {
-                    if (queued[i].commit === true) mergedCommit = true;
-                    if (!queued[i].scopeCols) { mergedScope = null; }
-                    else if (mergedScope) {
-                        for (const c of queued[i].scopeCols) mergedScope.add(c);
-                    }
-                }
-
-                try {
-                    const result = this._materializeEditsInner(mergedCommit, mergedScope);
-                    for (let i = 0; i < queued.length; i++) queued[i].resolve(result);
-                } catch (e) {
-                    for (let i = 0; i < queued.length; i++) queued[i].resolve(this.table);
-                } finally {
-                    this._isMaterializing = false;
-                }
-            } else {
-                this._isMaterializing = false;
-            }
-        }
-    }
-
-    /**
-     * Inner synchronous materialize — no awaits, no yielding, no reentrancy risk.
-     * @param {string|boolean} commit - 'auto'|true|false
-     * @param {Set|null} scopeCols - if provided, only rebuild these columns (others left as-is)
-     */
-    _materializeEditsInner(commit, scopeCols) {
         const n = this.numRows() | 0;
-        if (this._overlays.size === 0 || n === 0) return this.table;
+        if (this._overlays.size === 0 || n === 0) { this._isMaterializing = false; return this.table; }
 
         const physNames = this._fieldNames.filter(nm => this._nameToVector.has(nm));
-        if (physNames.length === 0) return this.table;
+        if (physNames.length === 0) { this._isMaterializing = false; return this.table; }
 
-        const tableColumns = {};
+        const columns = {};
         let any = false;
         const rebuilt = [];
 
@@ -2738,15 +2184,11 @@ export class ArrowEngine {
             const name = physNames[i];
             const vec = this._getVector(name);
             const ov = this._overlays.get(name);
-
-            // Skip columns not in scope (if scope is specified)
-            if (scopeCols && !scopeCols.has(name)) { tableColumns[name] = vec; continue; }
-
-            if (!ov || ov.size === 0) { tableColumns[name] = vec; continue; }
+            if (!ov || ov.size === 0) { columns[name] = vec; continue; }
 
             const density = ov.size / Math.max(1, n);
             const should = (commit === true) || (commit !== false && density >= this._autoCommitThreshold);
-            if (!should) { tableColumns[name] = vec; continue; }
+            if (!should) { columns[name] = vec; continue; }
 
             const builder = arrow.makeBuilder({ type: vec.type, nullValues: [null, undefined] });
 
@@ -2767,12 +2209,12 @@ export class ArrowEngine {
                 }
             }
 
-            tableColumns[name] = builder.finish().toVector();
+            columns[name] = builder.finish().toVector();
             rebuilt.push(name);
             any = true;
         }
 
-        const newTable = any ? arrow.makeTable(tableColumns) : this.table;
+        const newTable = any ? arrow.makeTable(columns) : this.table;
 
         if (any && (commit === true || commit !== false)) {
             this.replaceTable(newTable);
@@ -2787,42 +2229,23 @@ export class ArrowEngine {
                     ov.map.clear();
                     ov.size = 0;
                 }
-            }
-            for (let i = 0; i < rebuilt.length; i++) {
-                this._bumpColEpochByName(rebuilt[i]);
+                this._bumpColEpochByName(nm);
             }
             this._isMaterializing = false;
-            this._editCount = 0;
             return this.table;
         }
 
         this._isMaterializing = false;
-        this._editCount = 0;
         return newTable;
     }
 
     replaceTable(newTable){
         if (!newTable || !newTable.schema) throw new Error('replaceTable: invalid table');
 
-        const prevTable = this.table;
-        const prevNumRows = prevTable ? (prevTable.numRows | 0) : 0;
-        const prevNumCols = prevTable ? (prevTable.numCols | 0) : 0;
-
-        const nextNumRows = newTable.numRows | 0;
-        const nextNumCols = newTable.numCols | 0;
-
-        // Ensure required members always exist (even if older instances slip through).
-        if (!this._sortedRowCache) this._sortedRowCache = new Map();
-        if (this._tableReplaceSeq == null) this._tableReplaceSeq = 0;
-
-        this._emitTableWillReplace(prevTable, newTable);
-
         // [MEMORY] Release old references explicitly
         this.table = null;
         this._nameToVector.clear();
         this._nameToIndex.clear();
-        this._fieldNamesCache = null;
-        this._fieldSetCache = null;
 
         this.table = newTable;
         this._fields = newTable.schema.fields;
@@ -2832,119 +2255,45 @@ export class ArrowEngine {
             this._nameToVector.set(n, newTable.getChildAt(i));
             this._nameToIndex.set(n, i);
         }
-        this._fieldNamesCache = null;
-        this._fieldSetCache = null;
 
         this.timeUnitScale = Object.create(null);
         this._decoder = Object.create(null);
+        const n = this.numRows();
 
-        const n = nextNumRows;
-        const didShrink = nextNumRows < prevNumRows;
-        const schemaChanged = nextNumCols !== prevNumCols;
-
-        // Compact overlays to new size + drop overlays for columns that no longer exist anywhere.
+        // Compact overlays to new size
         for (const [name, ov] of this._overlays.entries()){
-            if (!ov) { this._overlays.delete(name); continue; }
-
-            const keep =
-                this._nameToVector.has(name) ||
-                this._derived.has(name) ||
-                this.columnDefs.has(name);
-
-            if (!keep) {
-                // Free memory aggressively for dead columns.
-                if (ov.kind === 'number') {
-                    ov.mask = null;
-                    ov.values = null;
-                    ov.size = 0;
-                } else {
-                    try { ov.map?.clear?.(); } catch {}
-                    ov.size = 0;
-                }
-                this._overlays.delete(name);
-                continue;
-            }
-
             if (ov.kind === 'number'){
-                const needsResize =
-                    !(ov.mask instanceof Uint8Array) ||
-                    !(ov.values instanceof Float64Array) ||
-                    (ov.mask.length !== n) ||
-                    (ov.values.length !== n);
+                if (ov.mask.length !== n){
+                    // Reallocate strict size to avoid bloat
+                    const m2 = new Uint8Array(n), v2 = new Float64Array(n);
+                    const copyLen = Math.min(ov.mask.length, n);
+                    m2.set(ov.mask.subarray(0, copyLen));
+                    v2.set(ov.values.subarray(0, copyLen));
+                    let s=0; for (let i=0;i<n;i++) if (m2[i] !== MASK_NONE) s++;
 
-                if (needsResize){
-                    const prevMask = (ov.mask instanceof Uint8Array) ? ov.mask : null;
-                    const prevVals = (ov.values instanceof Float64Array) ? ov.values : null;
-
-                    const m2 = new Uint8Array(n);
-                    const v2 = new Float64Array(n);
-
-                    if (prevMask && prevVals){
-                        const copyLen = Math.min(prevMask.length | 0, n);
-                        if (copyLen > 0) {
-                            m2.set(prevMask.subarray(0, copyLen));
-                            v2.set(prevVals.subarray(0, copyLen));
-                        }
-
-                        // PERF: only scan copyLen; the rest are known zeros.
-                        let s = 0;
-                        for (let i = 0; i < copyLen; i++) if (m2[i] !== MASK_NONE) s++;
-                        ov.size = s;
-                    } else {
-                        ov.size = 0;
-                    }
-
+                    // Dereference old arrays immediately
                     ov.mask = null;
                     ov.values = null;
+
                     ov.mask = m2;
                     ov.values = v2;
+                    ov.size = s;
                 }
             } else {
-                if (!ov.map || typeof ov.map.set !== 'function') ov.map = new Map(ov.map);
-                const mp = ov.map;
-
-                if (didShrink && mp && mp.size) {
-                    // Only delete out-of-range keys when the table shrank.
-                    let s = 0;
-                    for (const k of mp.keys()){
-                        const ri = (k | 0);
-                        if (ri < 0 || ri >= n) mp.delete(k);
-                        else s++;
-                    }
-                    ov.size = s;
-                } else {
-                    ov.size = mp ? mp.size : 0;
-                }
+                let s=0;
+                for (const k of ov.map.keys()){ if (k>=n) ov.map.delete(k); else s++; }
+                ov.size = s;
             }
-        }
-
-        // Trim frozen entries only when it matters (shrink and/or schema changes).
-        if (this._frozenOverrides && this._frozenOverrides.size && (didShrink || schemaChanged)) {
-            this._freeAllFrozen({
-                trimToRowCount: nextNumRows,
-                trimUnknownColumns: schemaChanged,
-                clearOverlays: false,
-                bump: false,
-                clearAll: false
-            });
         }
 
         this._rowIdToIndex = null;
-
         this._dictWindowCache.clear();
         this._dictEpochByVec = new WeakMap();
         this._dictEpochCounter = 1;
-
         this._idxMinMax.clear();
         this._pool.clear();
         this._classCache.clear();
         this._fmtCache.clear();
-
-        // Clear any sort cache keyed to the old table/data.
-        if (this._sortedRowCache && typeof this._sortedRowCache.clear === 'function') this._sortedRowCache.clear();
-
-        this._tableReplaceSeq = (this._tableReplaceSeq | 0) + 1;
-        this._emitTableDidReplace(prevTable, newTable);
     }
 
     resetOverlays(){
@@ -3024,11 +2373,9 @@ export class ArrowEngine {
         const before = this.numRows() | 0;
 
         const preserveById =
-            (typeof(resetOverlays) === 'string') && (
-                resetOverlays === 'byId' ||
-                resetOverlays === 'preserveById' ||
-                resetOverlays === 'remapById'
-            )
+            resetOverlays === 'byId' ||
+            resetOverlays === 'preserveById' ||
+            resetOverlays === 'remapById';
 
         // Snapshot overlays keyed by rowId (not rowIndex) so they can be restored after row reorder/filtering.
         let overlaysById = null;   // Map<colName, Map<rowId, value>>
@@ -3081,15 +2428,19 @@ export class ArrowEngine {
             // ---- frozen snapshot ----
             if (this._frozenOverrides && this._frozenOverrides.size) {
                 const snap = new Map();
-                for (const [col, rowSet] of this._frozenOverrides) {
-                    if (!rowSet || rowSet.size === 0) continue;
-                    let idSet = snap.get(col);
-                    if (!idSet) { idSet = new Set(); snap.set(col, idSet); }
-                    for (const ri of rowSet) {
-                        if (ri < 0 || ri >= before) continue;
-                        idSet.add(String(this.getRowIdByIndex(ri)));
-                    }
-                    if (idSet.size === 0) snap.delete(col);
+                for (const key of this._frozenOverrides) {
+                    if (typeof key !== 'string') continue;
+                    const p = key.lastIndexOf('::');
+                    if (p <= 0) continue;
+
+                    const col = key.slice(0, p);
+                    const ri = (key.slice(p + 2) | 0);
+                    if (ri < 0 || ri >= before) continue;
+
+                    const rowId = String(this.getRowIdByIndex(ri));
+                    let set = snap.get(col);
+                    if (!set) { set = new Set(); snap.set(col, set); }
+                    set.add(rowId);
                 }
                 if (snap.size) frozenById = snap;
             }
@@ -3143,16 +2494,13 @@ export class ArrowEngine {
 
             // Restore frozen flags by rowId
             if (frozenById && frozenById.size && this._frozenOverrides) {
-                for (const [col, idSet] of frozenById.entries()) {
-                    if (!idSet || idSet.size === 0) continue;
-                    let rowSet = this._frozenOverrides.get(col);
-                    if (!rowSet) { rowSet = new Set(); this._frozenOverrides.set(col, rowSet); }
-                    for (const rowId of idSet.values()) {
+                for (const [col, set] of frozenById.entries()) {
+                    if (!set || set.size === 0) continue;
+                    for (const rowId of set.values()) {
                         const ri = this.getRowIndexById(rowId);
                         if (ri < 0) continue;
-                        rowSet.add(ri | 0);
+                        this._frozenOverrides.add(`${col}::${ri | 0}`);
                     }
-                    if (rowSet.size === 0) this._frozenOverrides.delete(col);
                 }
             }
         } else {
@@ -3358,9 +2706,8 @@ export class ArrowEngine {
 
     /* -------------------------------- sorting -------------------------------- */
     sortIndex(indexArray, comparator){
-        const out = new Int32Array(indexArray);
-        out.sort(comparator);
-        return out;
+        const arr = Array.from(indexArray); arr.sort(comparator);
+        return Int32Array.from(arr);
     }
 
     buildComparatorByColumns(sortModel, opts = {}) {
@@ -3544,43 +2891,42 @@ export class ArrowEngine {
         if (!specs.length || !idx || !idx.length) return idx;
 
         const packedKeys = this._packSortKeys(specs, idx, columnMap);
-        try {
-            const n = idx.length;
-            const positions = new Uint32Array(n);
-            for (let i = 0; i < n; i++) positions[i] = i;
+        const n = idx.length;
+        const positions = new Uint32Array(n);
+        for (let i = 0; i < n; i++) positions[i] = i;
 
-            positions.sort((posA, posB) => {
-                for (let k = 0; k < packedKeys.length; k++) {
-                    const { dir, values, nulls, def } = packedKeys[k];
-                    const aIsNull = nulls[posA];
-                    const bIsNull = nulls[posB];
+        positions.sort((posA, posB) => {
+            for (let k = 0; k < packedKeys.length; k++) {
+                const { dir, values, nulls, def } = packedKeys[k];
+                const aIsNull = nulls[posA];
+                const bIsNull = nulls[posB];
 
-                    if (aIsNull && bIsNull) continue;
-                    if (aIsNull) return 1;
-                    if (bIsNull) return -1;
+                if (aIsNull && bIsNull) continue;
+                if (aIsNull) return 1;
+                if (bIsNull) return -1;
 
-                    const valA = values[posA];
-                    const valB = values[posB];
-                    if (def?.comparator) return def.comparator(valA, valB) * dir;
+                const valA = values[posA];
+                const valB = values[posB];
+                if (def?.comparator) return def.comparator(valA, valB) * dir;
 
-                    if (valA < valB) return -dir;
-                    if (valA > valB) return dir;
-                }
-                return 0;
-            });
-
-            const sortedIdx = new Int32Array(n);
-            for (let i = 0; i < n; i++) {
-                sortedIdx[i] = idx[positions[i]];
+                if (valA < valB) return -dir;
+                if (valA > valB) return dir;
             }
-            return sortedIdx;
-        } finally {
-            for (const keys of packedKeys) {
-                if (keys.mode !== 'string') {
-                    this._pool.release('float64', keys.values);
-                }
+            return 0;
+        });
+
+        const sortedIdx = new Int32Array(n);
+        for (let i = 0; i < n; i++) {
+            sortedIdx[i] = idx[positions[i]];
+        }
+
+        for (const keys of packedKeys) {
+            if (keys.mode !== 'string') {
+                this._pool.release('float64', keys.values);
             }
         }
+
+        return sortedIdx;
     }
 
     _extractSortSpecs(sortModel){
@@ -3595,6 +2941,49 @@ export class ArrowEngine {
         };
         const out=[]; for (let i=0;i<model.length;i++){ const n = norm(model[i]); if (n) out.push(n); }
         return out;
+    }
+
+    _extractKeysForSpec(spec, idx){
+        const { col, dir } = spec;
+        const get = this._getValueGetter(col);
+        const n = idx.length;
+
+        const samples = sampleSize(idx, 3).map(p => get(p));
+        let v0, v1, v2;
+        if (samples.length === 3) {
+            v0 = samples[0]; v1 = samples[1]; v2 = samples[2];
+        } else if (samples.length === 2) {
+            v0 = samples[0]; v1 = samples[1]; v2 = v1;
+        } else if (samples.length === 1) {
+            v0 = samples[0]; v1 = v0; v2 = v0;
+        }
+
+        const isNum = (x)=> typeof x==='number' && Number.isFinite(x);
+        const isDateLike = (x)=> (x instanceof Date) || (typeof x==='number' && Number.isFinite(x) && x>0 && x<8.64e15);
+
+        let mode = 0;
+        if (isNum(v0)||isNum(v1)||isNum(v2)) {
+            mode=1;
+        }else if (isDateLike(v0)||isDateLike(v1)||isDateLike(v2)) {
+            mode=2;
+        }
+
+        const nulls = new Uint8Array(n);
+        let buf = null;
+        if (mode === 1 || mode === 2) buf = this._pool.acquire('float64', n); else buf = new Array(n);
+
+        for (let i = 0; i < n; i++) {
+            const ri = idx[i];
+            let v = get(ri);
+            if (mode === 2 && v instanceof Date) v = v.getTime();
+            if (v == null || (typeof v === 'number' && !Number.isFinite(v))) {
+                nulls[i] = 1;
+                if (mode !== 0) buf[i] = NaN; else buf[i] = '';
+                continue;
+            }
+            buf[i] = (mode === 0) ? String(v) : +v;
+        }
+        return { col, dir, mode, buf, nulls };
     }
 
     /* --------------------------- row window helpers -------------------------- */
@@ -3691,7 +3080,7 @@ export class ArrowEngine {
     }
 
     getColumns(columnOrColumns) {
-        return this.getRowWindowObjects(0, this.numRows(), columnOrColumns)
+        return this.getRowWindowObjects(0, this.table.numRows, columnOrColumns)
     }
     getColumnValues(column){
         const columns = asArray(column)
@@ -3720,42 +3109,28 @@ export class ArrowEngine {
     _getFormattedColumnValues(name){
         const n = this.numRows();
         const out = new Array(n);
-        const d = this.columnDefs.get(name);
-        const fmt = d?.context?.valueFormatter || d?.valueFormatter;
-        const f = d?.context?.formatting || {};
         for (let i = 0; i < n; i++) {
             const v = this.getCell(i, name);
+            const d = this.columnDefs.get(name);
+            const fmt = d?.context?.valueFormatter || d?.valueFormatter;
+            const f = d?.context?.formatting || {};
             out[i] = fmt ? fmt({value: v}, this, f) : v;
         }
         return out;
     }
 
     getDistinctColumnValues(columns, asArr=false) {
-        const cols = asArray(columns);
-        const s = new Set();
-        const n = this.numRows();
-        if (cols.length === 1) {
-            const col = cols[0];
-            for (let i = 0; i < n; i++) s.add(this.getCell(i, col));
-        } else {
-            for (let c = 0; c < cols.length; c++) {
-                for (let i = 0; i < n; i++) s.add(this.getCell(i, cols[c]));
-            }
-        }
-        return asArr ? Array.from(s) : s;
+        const s = new Set(this.getColumnValues(columns));
+        return asArr ? Array.from(s) : s
     }
 
     getColumnType(columns) {
-        const names = this._normalizeColumnSelector(columns);
-        if (names.length === 1) return this.getDtype(names[0]) || null;
-        const out = {};
-        for (let i = 0; i < names.length; i++) out[names[i]] = this.getDtype(names[i]) || null;
-        return out;
+
     }
 
     /* ----------------------------- dictionary windows ------------------------ */
     _getDictionaryEpoch(vector){
-        if ((!vector) || (typeof vector.getDictionary !== 'function')) return 0;
+        if (!vector || typeof vector.getDictionary!=='function') return 0;
         const dictVec = vector.getDictionary(); if (!dictVec) return 0;
         let e = this._dictEpochByVec.get(dictVec);
         if (!e){ e = this._dictEpochCounter++; this._dictEpochByVec.set(dictVec, e); }
@@ -3764,7 +3139,7 @@ export class ArrowEngine {
 
     _bulkDecodeDictionary(name, start, end) {
         const vec = this._getVector(name);
-        if ((!vec) || (typeof vec.getDictionary !== 'function')) return null;
+        if (!vec || typeof vec.getDictionary !== 'function') return null;
 
         const dictVec = vec.getDictionary();
         const epoch = this._getDictionaryEpoch(vec);
@@ -3780,14 +3155,8 @@ export class ArrowEngine {
 
         const LIMIT = this._dictCacheMax | 0 || 512;
         if (this._dictWindowCache.size >= LIMIT) {
-            // Evict oldest 25% to amortize eviction cost and reduce thrashing.
-            const evictCount = Math.max(1, (LIMIT >>> 2));
-            const iter = this._dictWindowCache.keys();
-            for (let i = 0; i < evictCount; i++) {
-                const k = iter.next();
-                if (k.done) break;
-                this._dictWindowCache.delete(k.value);
-            }
+            const firstKey = this._dictWindowCache.keys().next().value;
+            if (firstKey !== undefined) this._dictWindowCache.delete(firstKey);
         }
         this._dictWindowCache.set(key, out);
         return out;
@@ -3826,9 +3195,10 @@ export class ArrowEngine {
 
         if (count === 0) return { count, nulls, min:NaN, max:NaN, sum:0, mean:NaN, std:NaN, variance:NaN };
 
-        const variance = count > 1 ? (M2 / (count - 1)) : 0;
+        const variance = count > 1 ? (M2 / count) : 0;
         const std = Math.sqrt(variance);
 
+        if (count === 0) { min = NaN; max = NaN; }
         return { count, nulls, min, max, sum, mean, std, variance };
     }
 
@@ -3836,13 +3206,13 @@ export class ArrowEngine {
     _isBigInt(field) {
         return (
             (field.type instanceof arrow.Int64) ||
-            ((field.type instanceof arrow.Int) && (field.type.bitWidth === 64))
+            (field.type instanceof arrow.Int) && (field.type.bitWidth === 64)
         )
     }
 
 
-    _rowsToTable(rows, my_schema=null) {
-        const schema = my_schema || this.table.schema;
+    _rowsToTable(rows, schema=null) {
+        schema = schema || this.table.schema;
         const fields = schema.fields;
         const builders = {};
         fields.forEach((field) => {
@@ -3943,7 +3313,6 @@ export class ArrowEngine {
      * Remove rows by rowId (or by row payloads containing id).
      * Compacts base vectors and reindexes overlays before swapping the table.
      */
-
     removeRowsById(idsOrRows) {
         const idKey = this._idProperty || '__rowId';
         const list = Array.isArray(idsOrRows) ? idsOrRows : (idsOrRows ? [idsOrRows] : []);
@@ -3978,10 +3347,9 @@ export class ArrowEngine {
         for (let i = 0; i < names.length; i++) {
             const name = names[i];
             const vec = this._getVector(name);
-            const dec = this._getDecoder(name);
+            const dec = this._buildDictionaryDecoder(vec);
             const out = new Array(n1);
-            let dst = 0;
-            for (let src = 0; src < n0; src++) {
+            for (let src = 0, dst = 0; src < n0; src++) {
                 if (removedSet.has(src)) continue;
                 let v;
                 if (dec) v = dec(src);
@@ -4000,8 +3368,7 @@ export class ArrowEngine {
                 const newMask = new Uint8Array(n1);
                 const newVals = new Float64Array(n1);
                 let size = 0;
-                let dst = 0;
-                for (let src = 0; src < n0; src++) {
+                for (let src = 0, dst = 0; src < n0; src++) {
                     if (removedSet.has(src)) continue;
                     const m = ov.mask[src] | 0;
                     newMask[dst] = m;
@@ -4016,22 +3383,19 @@ export class ArrowEngine {
                 ov.mask = newMask; ov.values = newVals; ov.size = size;
             } else {
                 const mp = ov.map || new Map();
-                // Collect surviving entries and sort by key to enable correct shift computation.
-                const entries = [];
-                for (const [ri, val] of mp.entries()) {
-                    if (!removedSet.has(ri)) entries.push([ri, val]);
-                }
-                entries.sort((a, b) => a[0] - b[0]);
-
                 const next = new Map();
                 let size = 0;
                 let rPtr = 0;
                 const rList = remIdx;
-                for (let k = 0; k < entries.length; k++) {
-                    const ri = entries[k][0];
+                const countRemovedLE = (ri) => {
                     while (rPtr < rList.length && rList[rPtr] <= ri) rPtr++;
-                    const dst = ri - rPtr;
-                    next.set(dst, entries[k][1]);
+                    return rPtr;
+                };
+                for (const [ri, val] of mp.entries()) {
+                    if (removedSet.has(ri)) continue;
+                    const shift = countRemovedLE(ri);
+                    const dst = ri - shift;
+                    next.set(dst, val);
                     size++;
                 }
                 ov.map = next; ov.size = size;
@@ -4063,8 +3427,7 @@ export class ArrowEngine {
             const name = names[i];
             const vec = this._getVector(name);
             const out = new Array(n0 - remIdx.length);
-            let dst = 0;
-            for (let src = 0; src < n0; src++) {
+            for (let src = 0, dst = 0; src < n0; src++) {
                 if (removedSet.has(src)) continue;
                 let v = vec.get(src);
                 if (typeof v === 'bigint') v = Number(v);
@@ -4080,8 +3443,7 @@ export class ArrowEngine {
                 const newMask = new Uint8Array(n0 - remIdx.length);
                 const newVals = new Float64Array(n0 - remIdx.length);
                 let size = 0;
-                let dst = 0;
-                for (let src = 0; src < n0; src++) {
+                for (let src = 0, dst = 0; src < n0; src++) {
                     if (removedSet.has(src)) continue;
                     const m = ov.mask[src] | 0;
                     newMask[dst] = m;
@@ -4092,35 +3454,28 @@ export class ArrowEngine {
                 ov.mask = newMask; ov.values = newVals; ov.size = size;
             } else {
                 const mp = ov.map || new Map();
-                // Collect surviving entries and sort by key to enable correct shift computation.
-                const entries = [];
-                for (const [ri, val] of mp.entries()) {
-                    if (!removedSet.has(ri)) entries.push([ri, val]);
-                }
-                entries.sort((a, b) => a[0] - b[0]);
-
                 const next = new Map();
                 let size = 0;
                 let rPtr = 0;
                 const rList = remIdx;
-                for (let k = 0; k < entries.length; k++) {
-                    const ri = entries[k][0];
-                    while (rPtr < rList.length && rList[rPtr] <= ri) rPtr++;
-                    const dst = ri - rPtr;
-                    next.set(dst, entries[k][1]); size++;
+                const countRemovedLE = (ri) => { while (rPtr < rList.length && rList[rPtr] <= ri) rPtr++; return rPtr; };
+                for (const [ri, val] of mp.entries()) {
+                    if (removedSet.has(ri)) continue;
+                    const shift = countRemovedLE(ri);
+                    const dst = ri - shift;
+                    next.set(dst, val); size++;
                 }
                 ov.map = next; ov.size = size;
             }
         }
 
-        // Gather ids BEFORE the table swap (post-swap the indices are invalid)
-        const removedIds = new Array(removedIndices.length);
-        for (let i = 0; i < removedIndices.length; i++) removedIds[i] = this.getRowIdByIndex(removedIndices[i]);
-
         this.replaceTable(arrow.makeTable(cols));
         this._rowIdToIndex = null;
         this._emitEpochChange({ rowsChanged: true, colsChanged: true });
 
+        // Gather ids post-swap using index → id mapping
+        const removedIds = new Array(removedIndices?.length ?? 0);
+        for (let i = 0; i < removedIndices.length; i++) removedIds[i] = String(removedIndices[i]);
         return { removedIndices, removedIds };
     }
 
@@ -4128,16 +3483,11 @@ export class ArrowEngine {
         if (this._disposed) return;
         this._disposed = true;
 
-        // Cancel any pending materialize timer
-        if (this._materializeTimer) { clearTimeout(this._materializeTimer); this._materializeTimer = null; }
-        if (this._materializeResolvers) { this._materializeResolvers.length = 0; }
-
         this._editCoalescer.dispose();
 
         // Release heavy Arrow tables
         this.table = null;
         this._nameToVector.clear();
-        this._nameToIndex.clear();
 
         // Clear all caches
         this._classCache.clear();
@@ -4147,12 +3497,9 @@ export class ArrowEngine {
         this._overlays.forEach(ov => {
             if (ov.mask) ov.mask = null;
             if (ov.values) ov.values = null;
-            if (ov.map) { ov.map.clear(); ov.map = null; }
+            if (ov.map) ov.map.clear();
         });
         this._overlays.clear();
-
-        // Clear frozen overrides (unbounded string Set)
-        if (this._frozenOverrides) { this._frozenOverrides.clear(); }
 
         // Clear Derived subs
         this._derivedSettingsSubs.forEach(subs => {
@@ -4163,33 +3510,9 @@ export class ArrowEngine {
         });
         this._derivedSettingsSubs.clear();
 
-        // Clear derived column state
-        this._derived.clear();
-        this._columnDependencies.clear();
-        this._columnDependents.clear();
-        this._valueSetters.clear();
-        this._settingsGetter.clear();
-        if (this._derivedErrorOnce) { this._derivedErrorOnce.clear(); this._derivedErrorOnce = null; }
-
-        // Clear sort and dependency caches
-        if (this._sortedRowCache) { this._sortedRowCache.clear(); this._sortedRowCache = null; }
-        this._depClosureCache.clear();
-        this._dependentsClosureCache.clear();
-        this._fieldNamesCache = null;
-        this._fieldSetCache = null;
-        this._dtypes = null;
-        this._rowIdToIndex = null;
-        if (this._derivedNameToIndex) { this._derivedNameToIndex.clear(); }
-
         // Release Pool memory
         this._pool.clear();
-
-        // Dispose the internal emitter
-        if (this._em && typeof this._em.dispose === 'function') this._em.dispose();
         this._em = null;
-
-        // Clear epoch queue
-        this._epochQueue.length = 0;
     }
 
 }
@@ -4200,7 +3523,7 @@ export class ArrowAgGridAdapter {
     static focusedGrid = null;
     static LOAD_DELAY = 2000;
 
-    constructor(context, engine, columnDefs, opts = {}, {name='portfolio', globalViews=[], enableFilterMemory=true, enablePasteOverride=false}={}) {
+    constructor(context, engine, columnDefs, opts = {}, {name='portfolio', globalViews=[], enableFilterMemory=true}={}) {
         if (!engine) throw new Error('ArrowAgGridAdapter: engine is required.');
         if (!Array.isArray(columnDefs)) throw new Error('ArrowAgGridAdapter: columnDefs array is required.');
 
@@ -4227,7 +3550,6 @@ export class ArrowAgGridAdapter {
 
         this.dirty = { rows: new Set(), cols: new Set(), cells: new Set() };
         this._flushScheduled = false;
-        this._pendingPostEditRefresh = false;
 
         this.name = name;
         this.grid$ = this.context.page.createStore(this.name, {
@@ -4256,13 +3578,8 @@ export class ArrowAgGridAdapter {
         this.searchManager = new GlobalSearchManager(this);
 
         this._em = this.context.page.emitter;
-        // _handleEpoch disabled: flush() already expands dependents via
-        // getDependentsClosure and clears cell caches.  The epoch listener was
-        // redundant and caused an infinite cycle (grid$.set → settings listener
-        // → _bumpColEpochByName → _emitEpochChange → _handleEpoch → refreshServerSide
-        // → _getRows → grid$.set → ∞).
-        this._onEpoch = null;
-        this._offEpoch = null;
+        this._onEpoch = this._handleEpoch.bind(this);
+        this._offEpoch = this.engine.onEpochChange(this._onEpoch);
 
         this._memo = memoize;
         this._guessWidth = this._guessWidthRaw // this._memo(this._guessWidthRaw.bind(this));
@@ -4277,8 +3594,6 @@ export class ArrowAgGridAdapter {
         this._idProperty = this.engine._idProperty;
         this._idxProperty = this.engine._idxProperty;
 
-        this._enablePasteOverride = !!enablePasteOverride;
-        this._pasteOverrideManager = null;
     }
 
     _setupReactions() {
@@ -4316,13 +3631,15 @@ export class ArrowAgGridAdapter {
     static SEARCH_EVENT = "grid:search"
     static COLUMNS_EVENT = "grid:columns"
     static COLUMN_RESIZE_EVENT = "grid:column-resize"
-    static ROW_COUNT_EVENT = "grid:row-count"
 
-    _notifyFilterModel(...args) {this._notify(ArrowAgGridAdapter.FILTER_EVENT, ...args)}
-    _notifyQuickSearch(...args) {this._notify(ArrowAgGridAdapter.FILTER_EVENT, ...args);}
-    _notifyRowCount(...args) {
-        const my_event = ArrowAgGridAdapter.ROW_COUNT_EVENT + ":" + this.name;
-        this._notify(my_event, ...args);
+    _notifyFilterModel(...args) {
+        this._notify(ArrowAgGridAdapter.FILTER_EVENT, ...args);
+        // this._notify(ArrowAgGridAdapter.FILTER_MODEL_EVENT, ...args);
+    }
+
+    _notifyQuickSearch(...args) {
+        this._notify(ArrowAgGridAdapter.FILTER_EVENT, ...args);
+        // this._notify(ArrowAgGridAdapter.SEARCH_EVENT, ...args);
     }
 
     // Keyboard
@@ -4439,8 +3756,8 @@ export class ArrowAgGridAdapter {
         return toIndex;
     }
 
-    static create(context, engine, columnDefs, opts = {}, {name='portfolio', globalViews=[], enableFilterMemory=true, enablePasteOverride=false}={}) {
-        return new ArrowAgGridAdapter(context, engine, columnDefs, opts, {name:name, globalViews:globalViews, enableFilterMemory:enableFilterMemory, enablePasteOverride:enablePasteOverride});
+    static create(context, engine, columnDefs, opts = {}, {name='portfolio', globalViews=[], enableFilterMemory=true}={}) {
+        return new ArrowAgGridAdapter(context, engine, columnDefs, opts, {name:name, globalViews:globalViews, enableFilterMemory:enableFilterMemory});
     }
 
     async onKeyDown(e) {
@@ -4563,8 +3880,7 @@ export class ArrowAgGridAdapter {
                 if (setsEqual(prevSet, s)) {
                     running.push(ri);
                 } else {
-                    let minIdx = Number.MAX_SAFE_INTEGER;
-                    for (let k = 0; k < running.length; k++) { const v = riVisualIdx.get(running[k]); if (v < minIdx) minIdx = v; }
+                    const minIdx = running.length ? Math.min(...running.map(x => riVisualIdx.get(x))) : Number.MAX_SAFE_INTEGER;
                     groups.push({rows: running.slice(), set: prevSet, orderKey: minIdx});
                     running.length = 0;
                     running.push(ri);
@@ -4572,8 +3888,7 @@ export class ArrowAgGridAdapter {
                 }
             }
             if (running.length) {
-                let minIdx = Number.MAX_SAFE_INTEGER;
-                for (let k = 0; k < running.length; k++) { const v = riVisualIdx.get(running[k]); if (v < minIdx) minIdx = v; }
+                const minIdx = Math.min(...running.map(x => riVisualIdx.get(x)));
                 groups.push({rows: running.slice(), set: prevSet, orderKey: minIdx});
             }
 
@@ -4676,8 +3991,9 @@ export class ArrowAgGridAdapter {
                         const colId = p.column ? p.column.getColId() : (p.colId || p.colDef?.field);
                         const ri = p?.data?.[this._idxProperty];
                         if (ri == null || colId == null) return null;
-                        return engine.getCell(ri | 0, colId, p);
+                        return engine.getCell(ri|0, colId, p);
                     } catch (e) {
+                        console.error('valueGetter error', e);
                         return null;
                     }
                 },
@@ -4717,7 +4033,7 @@ export class ArrowAgGridAdapter {
             suppressContextMenu: false,
             processDataFromClipboard: (params) => processDataFromClipboard(params, adapter),
             onColumnHeaderContextMenu: (e) => {
-                e.api.showColumnFilter(e.column.colId);
+              e.api.showColumnFilter(e.column.colId);
             },
             onSortChanged: async (e) => {
                 const sortModel = e.api.sortController.getSortModel();
@@ -4744,6 +4060,24 @@ export class ArrowAgGridAdapter {
             onColumnVisible: async (e) => {
                 try { this._processColumnVisibleEvent(e) } catch {}
             },
+            // getRowClass: (params) => {
+            //     const r = [];
+            //
+            //     if (engine.columnDefs.has('desigTraderId')) {
+            //         const ri = params?.data?.__srcIndex;
+            //         if (ri == null) return null;
+            //         const desig = engine.getCell(ri, "desigTraderId");
+            //         const assigned = engine.getCell(ri, "assignedTrader");
+            //
+            //         const user = adapter?.context?.page?.userManager()?.userProfile$?.get('username');
+            //         const display = adapter?.context?.page?.userManager()?.userProfile$?.get('displayName');
+            //
+            //         if (desig?.toLowerCase() === user?.toLowerCase()) r.push('trader-name-matches');
+            //         if (assigned?.toLowerCase() === display?.toLowerCase()) r.push('trader-name-matches');
+            //     }
+            //
+            //     return r
+            // },
             rowClassRules: {
                 'error-row': (params) => {
                     if (!engine.columnDefs.has('desigName')) return
@@ -4786,17 +4120,7 @@ export class ArrowAgGridAdapter {
                     if (((desig != null)) && (desig?.toLowerCase() === user?.toLowerCase())) return true;
                     if (((assigned != null)) && (assigned?.toLowerCase() === display?.toLowerCase())) return true;
                     return false
-                },
 
-                'removed-row': (params) => {
-                    if (!engine.columnDefs.has('isReal')) return
-                    const ri = params?.data?.[this._idxProperty];
-                    if (ri == null) return;
-                    if (this.pending_styles.has(ri)) {
-                        return coerceToNumber(this.pending_styles.get(ri)['isReal']) === 0
-                    }
-                    const real = params.data?.isReal ?? engine.getCell(ri, 'isReal');
-                    return coerceToNumber(real) === 0
                 }
             },
             onColumnMoved: () => this._updateProjection(),
@@ -4925,7 +4249,7 @@ export class ArrowAgGridAdapter {
                                     const id = node.data[id_col]
                                     if (ri == null) {
                                         console.error(node, i)
-                                        continue;
+                                        return;
                                     }
                                     updates.push({[this._idxProperty]:ri, [id_col]:id, claimed:1})
                                 } catch(e) {
@@ -4962,7 +4286,7 @@ export class ArrowAgGridAdapter {
                                     const id = node.data[id_col]
                                     if (ri == null) {
                                         console.error(node, i)
-                                        continue;
+                                        return;
                                     }
                                     updates.push({[this._idxProperty]:ri, [id_col]:id, claimed:2})
                                 } catch(e) {
@@ -5025,7 +4349,7 @@ export class ArrowAgGridAdapter {
                                     const id = node.data[id_col]
                                     if (ri == null) {
                                         console.error(node, i)
-                                        continue;
+                                        return;
                                     }
                                     updates.push({[this._idxProperty]:ri, [id_col]:id, claimed:0})
                                 } catch(e) {
@@ -5038,7 +4362,7 @@ export class ArrowAgGridAdapter {
                         icon: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 28 28"><path fill="currentColor" d="M3.28 2.22a.75.75 0 1 0-1.06 1.06l3.41 3.41c-.4.422-.63.993-.63 1.58v8.98c0 1.414.432 2.878.96 4.151a22 22 0 0 0 1.67 3.198c.572.912 1.572 1.398 2.597 1.398h3.867a3.25 3.25 0 0 0 2.914-1.81l.377-.762c.49-.99 1.122-1.902 1.877-2.708l.19-.203l5.267 5.267a.75.75 0 0 0 1.061-1.061zm15.112 17.232l-.224.239a12.8 12.8 0 0 0-2.128 3.07l-.377.762a1.75 1.75 0 0 1-1.569.974h-3.867c-.56 0-1.054-.262-1.325-.694a21 21 0 0 1-1.556-2.977c-.493-1.188-.846-2.443-.846-3.576V8.27c0-.2.07-.382.19-.519L8 9.061v3.689a.75.75 0 0 0 1.5 0v-2.19l1.5 1.5v.19a.75.75 0 0 0 .92.73zM8.152 4.97L9.5 6.318v-.523c0-.445.332-.795.747-.795c.421 0 .753.35.753.795v2.023l1.5 1.5V4.272c0-.427.32-.772.752-.772c.44 0 .748.332.748.76v6.558l1.497 1.497l.003-.065V5.763c0-.4.324-.76.75-.763c.384-.002.75.363.75.795v8.023l1.378 1.378l.054-.05c.24-.214.398-.356.629-.49c.266-.153.656-.304 1.377-.415c.663-.102 1.346-.012 1.829.25c.35.19.606.469.697.894l-2.144 1.5a1 1 0 0 0-.117.102l-.258.276l1.06 1.06l.239-.253l2.436-1.706c.2-.14.32-.37.32-.614c0-1.239-.639-2.101-1.518-2.578c-.839-.454-1.87-.552-2.772-.413c-.735.113-1.272.276-1.71.497v-7.46c0-1.173-.954-2.304-2.258-2.296a2.2 2.2 0 0 0-.822.158c-.249-.924-1.062-1.659-2.169-1.658c-1.1 0-1.912.742-2.167 1.658a2.2 2.2 0 0 0-.837-.158c-1.029 0-1.786.654-2.095 1.47"/></svg>`
                     },
                     {
-                        name: 'Toggle Algo Assignment',
+                        name: 'Toggle Algo Assignemnt',
                         action: async () => {
                             const claimed = true;
                             const rng = params.api.getCellRanges()[0]
@@ -5057,7 +4381,7 @@ export class ArrowAgGridAdapter {
                                     const id = node.data[id_col]
                                     if (ri == null) {
                                         console.error(node, i)
-                                        continue;
+                                        return;
                                     }
                                     const isAlgo = engine.getCell(ri, 'algoAssigned');
                                     if (isAlgo) {
@@ -5111,21 +4435,16 @@ export class ArrowAgGridAdapter {
             {};
 
         requestAnimationFrame(async ()=>{
-            if (!this.engine || !this.api) return; // guard against post-dispose RAF
             await this.engine.applyValue(ri, colId, newValue, colDef)
             try {
+                const colId = e?.column?.getColId?.() ?? e?.colDef?.field ?? e?.colId;
+                const ri = e?.data?.[this._idxProperty] != null ? (e.data?.[this._idxProperty]|0) : (e?.rowIndex|0);
                 if (colId != null && ri >= 0) this.markCell(ri, colId);
             } catch {}
         })
     }
 
     afterMount() {
-        requestAnimationFrame(()=>{
-            this._afterMount()
-        })
-    }
-
-    _afterMount() {
         this.api.setGridOption('serverSideDatasource', this._makeDatasource());
         this.keyCoalescer = installKeyCoalescer(this, this.element, this.api);
         this._setupListeners();
@@ -5134,21 +4453,11 @@ export class ArrowAgGridAdapter {
         this._setupHovers();
         // this._bootstrapInitialColumnState();
 
-        // Paste override: attach manager if enabled
-        if (this._enablePasteOverride) {
-            this._pasteOverrideManager = new PasteOverrideManager(this, { enabled: true, createGrid });
-            this._pasteOverrideManager.attach();
-        }
-
         const adapter = this;
-        if (!this.grid$.get("initialized")) {
-            setTimeout(() => {
-                adapter.grid$.set('initialized', true);
-                adapter._notify(ArrowAgGridAdapter.API_READY, true);
-                this._notifyRowCount();
-            }, 10);
-        }
-
+        setTimeout(()=> {
+            adapter.grid$.set('initialized', true);
+            adapter._notify(ArrowAgGridAdapter.API_READY, true);
+        }, 10);
         const headerBar = this.element.querySelector('.ag-root .ag-header');
         const popup = this.element.querySelector('.ag-root-wrapper');
         this.context.page.addEventListener(headerBar, 'contextmenu', (e) => e.preventDefault());
@@ -5167,29 +4476,10 @@ export class ArrowAgGridAdapter {
 
     }
 
-    /**
-     * Toggle the paste-override modal on or off at runtime.
-     * If the manager hasn't been created yet, it will be lazily initialized.
-     * @param {boolean} flag
-     */
-    setPasteOverride(flag) {
-        const enabled = !!flag;
-        this._enablePasteOverride = enabled;
-        if (enabled && !this._pasteOverrideManager && this.element) {
-            this._pasteOverrideManager = new PasteOverrideManager(this, { enabled: true, createGrid });
-            this._pasteOverrideManager.attach();
-        }
-        if (this._pasteOverrideManager) {
-            this._pasteOverrideManager.setEnabled(enabled);
-        }
-    }
-
     _setupHovers() {
 
         const adapter = this;
         const gridDiv = this.element;
-        this._hoverController = new AbortController();
-        const signal = this._hoverController.signal;
 
         const toggleRow = (idx, add) => {
             const nodes = gridDiv.querySelectorAll('.ag-row[row-index="' + idx + '"]');
@@ -5209,14 +4499,14 @@ export class ArrowAgGridAdapter {
             if (lastIdx != null) toggleRow(lastIdx, false);
             toggleRow(idx, true);
             lastIdx = idx;
-        }, { signal });
+        });
 
         this.element.addEventListener('mouseleave', function () {
             if (lastIdx != null) {
                 toggleRow(lastIdx, false);
                 lastIdx = null;
             }
-        }, { signal });
+        });
     }
 
     _hasAnyDisplayedColumns(api) {
@@ -5253,17 +4543,12 @@ export class ArrowAgGridAdapter {
 
     _applyDefaultPresetIfHidden(api) {
         if (!api) return false;
-        if (this._hasAnyDisplayedColumns(api)) {
-            try { this.grid$.set('presetLoaded', true); } catch {}
-            return true;
-        }
+        if (this._hasAnyDisplayedColumns(api)) return true;
 
         const presets = (typeof this.getGlobalPresets === 'function') ? this.getGlobalPresets() : [];
         const p0 = (Array.isArray(presets) && presets.length) ? presets[0] : null;
         if (p0 && Array.isArray(p0.columnState) && p0.columnState.length) {
-            try { void this.loadGridState(p0); } catch {
-                try { this.grid$.set('presetLoaded', true); } catch {}
-            }
+            try { void this.loadGridState(p0); } catch {}
             return true;
         }
         const all = this.getAllFields();
@@ -5318,14 +4603,11 @@ export class ArrowAgGridAdapter {
 
     _setupUserMap() {
         if (!this.engine.columnDefs.has('desigTraderId')) return
-        const n = this.engine.numRows();
-        const mp = new Map();
-        for (let i = 0; i < n; i++) {
-            const id = this.engine.getRowIdByIndex(i);
-            const traderId = this.engine.getCell(i, 'desigTraderId');
-            if (id != null && traderId != null) mp.set(String(id), traderId);
-        }
-        this.id_rows_by_user = mp;
+        const ids = this.engine.getAllRows({
+            columns:[this.engine._idProperty, 'desigTraderId'],
+            format: 'array'
+        })
+        this.id_rows_by_user = new Map(ids);
     }
 
     dispose() {
@@ -5335,37 +4617,13 @@ export class ArrowAgGridAdapter {
         // Clear trackers
         this.dirty.rows.clear();
         this.dirty.cols.clear();
+        this.dirty.cells.clear();
         this._flashTimers.forEach(t => clearTimeout(t));
-        this._flashTimers.clear();
-
-        try { this._hoverController?.abort(); } catch {}
 
         if (this._bootstrapPollTimer) clearTimeout(this._bootstrapPollTimer);
         this._bootstrapPollTimer = null;
         if (this._firstEventTimer) clearTimeout(this._firstEventTimer);
         this._firstEventTimer = null;
-
-        // Destroy paste override manager
-        if (this._pasteOverrideManager) {
-            try { this._pasteOverrideManager.destroy(); } catch {}
-            this._pasteOverrideManager = null;
-        }
-
-        // Clean up module-global overlay DOM elements for this adapter's selector
-        if (this.selector && overlayMap.has(this.selector)) {
-            const el = overlayMap.get(this.selector);
-            try { el?.remove(); } catch {}
-            overlayMap.delete(this.selector);
-        }
-        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = 0; }
-
-        // Clear id_rows_by_user to free captured row data
-        if (this.id_rows_by_user) { this.id_rows_by_user.clear(); this.id_rows_by_user = null; }
-
-        // Clear pending_styles and row pool
-        if (this.pending_styles) { this.pending_styles.clear(); this.pending_styles = null; }
-        this._rowPool = null;
-        this.viewportRows = null;
 
         if (this?.api?.treeService) this?.api?.treeService.destroy();
         if (this.keyCoalescer) this.keyCoalescer();
@@ -5403,7 +4661,7 @@ export class ArrowAgGridAdapter {
             // Move to rightmost unpinned spot & scroll into view (unchanged)
             if (this?.api?.treeService?._filterSelected !== true) {
                 this.moveColumn(name, Number.MAX_SAFE_INTEGER, { breakPins: false, toRight: true });
-            }
+                }
             const api = this.api;
             if (api && typeof api.ensureColumnVisible === 'function') {
                 requestAnimationFrame(() => api.ensureColumnVisible(name, 'end'));
@@ -5510,22 +4768,9 @@ export class ArrowAgGridAdapter {
             try { this.grid$.set('presetLoaded', true); } catch {}
 
         } finally {
-            // 5) Once a preset with explicit widths has been loaded, permanently
-            //    disable the autoSizeStrategy (e.g. fitCellContents) so that
-            //    subsequent data refreshes / epoch changes do not shrink columns
-            //    back to min-width.  Only restore the previous strategy when the
-            //    loaded state carried NO width information at all.
-            const hasExplicitWidths = Array.isArray(state.columnState) &&
-                state.columnState.some(c => typeof c.width === 'number' && c.width > 0);
-            if (hasExplicitWidths) {
-                // Keep autosize disabled — preset widths should stick.
-                try { this.api.setGridOption('autoSizeStrategy', undefined); } catch {}
-                try { this.api.setGridOption('suppressAutoSize', true); } catch {}
-            } else {
-                // No widths in preset — restore original autosize behaviour.
-                try { this.api.setGridOption('autoSizeStrategy', prevAuto); } catch {}
-                try { this.api.setGridOption('suppressAutoSize', prevSuppress); } catch {}
-            }
+            // 5) Restore previous autosize settings (or keep disabled; your choice).
+            try { this.api.setGridOption('autoSizeStrategy', prevAuto); } catch {}
+            try { this.api.setGridOption('suppressAutoSize', prevSuppress); } catch {}
         }
     }
 
@@ -5572,7 +4817,7 @@ export class ArrowAgGridAdapter {
             } else {
                 filterName += ` (${out.field})`
             }
-            // if (!out.icons.filter) out.icons.filter = `<div class="ag-filter-lottie-wrapper"><lord-icon src="/assets/lottie/filter.json" trigger="in" class="ag-filter-lottie-icon current-color"></lord-icon><span>${filterName}</span></div>`
+            if (!out.icons.filter) out.icons.filter = `<div class="ag-filter-lottie-wrapper"><lord-icon src="/assets/lottie/filter.json" trigger="in" class="ag-filter-lottie-icon current-color"></lord-icon><span>${filterName}</span></div>`
             const ctx = out.context;
             ctx.idProperty = engine._idProperty;
             const cs = out.cellClass || (ctx.cellClass);
@@ -5606,9 +4851,8 @@ export class ArrowAgGridAdapter {
         }
     }
 
-    _evaluateQuickSearch(my_idx) {
+    _evaluateQuickSearch(idx) {
         this.quickSearch = null;
-        let idx = my_idx;
         if (this?.context?.page?.quickSearch$) {
             const quickSearch = this.context.page.quickSearch$.get('quickSearch');
             const colsForSearch = this.searchManager.colsForSearch({includeVisible:false});
@@ -5655,10 +4899,10 @@ export class ArrowAgGridAdapter {
     buildPredicate(col, model) {
 
         const engine = this.engine;
-        const MS_PER_DAY = 86400000;
         const sameDay = (aMs, bMs) => {
             if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return false;
-            return Math.floor(aMs / MS_PER_DAY) === Math.floor(bMs / MS_PER_DAY);
+            const A = new Date(aMs), B = new Date(bMs);
+            return A.getFullYear() === B.getFullYear() && A.getMonth() === B.getMonth() && A.getDate() === B.getDate();
         };
 
         if (!model || typeof model !== 'object') return null;
@@ -5793,9 +5037,9 @@ export class ArrowAgGridAdapter {
             const p = this.buildPredicate(keys[i], filterModel[keys[i]]);
             if (p) preds.push(p);
         }
-        if (!preds.length) return candidate || fullIndex(n);
+        if (!preds.length) return candidate || (() => { const a = new Int32Array(n); for (let i = 0; i < n; i++) a[i] = i; return a; })();
 
-        const base = candidate || fullIndex(n);
+        const base = candidate || (() => { const a = new Int32Array(n); for (let i = 0; i < n; i++) a[i] = i; return a; })();
         const kept = new Int32Array(base.length); let k = 0;
         for (let i = 0; i < base.length; i++) {
             const ri = base[i] | 0;
@@ -5809,6 +5053,7 @@ export class ArrowAgGridAdapter {
     _getRows(params) {
         try {
             const engine = this.engine
+            // console.log(this.name, params);
             const req = params.request || {};
             const startRow = req.startRow | 0;
             const endRow   = req.endRow   | 0;
@@ -5820,6 +5065,7 @@ export class ArrowAgGridAdapter {
             idx = this._evaluateQuickSearch(idx);
             this.grid$.set('lastIdx', idx);
             this.splitFilterModel(filterModel);
+
 
             // Sort (engine-side)
             if (sortModel.length) {
@@ -5884,28 +5130,16 @@ export class ArrowAgGridAdapter {
     }
 
     _handleEpoch(payload) {
-        if (this._inHandleEpoch) {
-            console.error('[REENTRANT] _handleEpoch called while already executing!', new Error().stack);
-            return;
-        }
-        this._inHandleEpoch = true;
-        // Suppress epoch emissions during epoch handling — any _emitEpochChange
-        // calls triggered by refreshServerSide/grid$.set/settings listeners are
-        // side-effects of rendering, not new data changes.
-        this.engine._suppressEpochEmit = true;
-        try {
         this._invalidateIdxCache();
         const api = this.api;
         if (!api) return;
         const saved = api.getCellRanges?.();
-        let allCols;
 
         try {
 
             const normalizeCols = (x) => {
                 if (x === true) return true;           // sentinel for “all columns”
                 if (!x) return null;                   // undefined/null → none
-                if (typeof x === 'string') return [x]; // single column name
                 if (Array.isArray(x)) return x.slice();
                 if (x instanceof Set) return Array.from(x);
                 try { return Array.from(x); } catch { return null; }
@@ -5923,12 +5157,17 @@ export class ArrowAgGridAdapter {
             let cols = normalizeCols(payload?.colsChanged);
             let rows = normalizeRows(payload?.rowsChanged);
 
+            // Save range to re-apply
+
+
             // Expand dependents if we have a concrete column list
-            allCols = cols;
+            let allCols = cols;
             if (cols && cols !== true) {
                 const deps = this.engine.getDependentsClosure(cols);
-                const dirtyDerived = deps.filter(col => this.engine._isDerived(col));
-                if (dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
+                const dirtyDerived = this.engine
+                    .getDependentsClosure(cols)
+                    .filter(col => this.engine._isDerived(col));
+                if (dirtyDerived && dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
                 allCols = Array.from(new Set(cols.concat(deps)));
             }
 
@@ -5948,17 +5187,11 @@ export class ArrowAgGridAdapter {
             if (rows && allCols) {
                 if (allCols !== true) {
                     const work = rows.length * allCols.length;
-                    if (work > 4096) {
-                        api.refreshServerSide?.({ purge: false });
-                        this._applyCellRange(saved);
-                        this.engine._notifyColumnChanged(allCols);
-                        return;
-                    }
+                    if (work > 4096) { api.refreshServerSide?.({ purge: false }); return; }
                     for (let i = 0; i < rows.length; i++) {
                         const r = rows[i] | 0;
                         for (let j = 0; j < allCols.length; j++) this.markCell(r, allCols[j]);
                     }
-                    this.engine._notifyColumnChanged(allCols);
                     return;
                 }
                 api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
@@ -5989,7 +5222,6 @@ export class ArrowAgGridAdapter {
                 if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
             } catch {}
         }
-        } finally { this.engine._suppressEpochEmit = false; this._inHandleEpoch = false; }
     }
 
     _getCurrentSortCols() {
@@ -6025,6 +5257,7 @@ export class ArrowAgGridAdapter {
     markCell(rowIndex, colId) {
         this.dirty.rows.add(rowIndex|0);
         this.dirty.cols.add(colId);
+        this.dirty.cells.add(`${rowIndex|0}::${colId}`);
         this._scheduleFlush();
     }
 
@@ -6048,24 +5281,11 @@ export class ArrowAgGridAdapter {
 
         suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
 
-        // Clear cached class-rules / formatters for dirty columns so refreshCells
-        // picks up fresh values.  Previously handled by _handleEpoch.
-        if (columns) this.engine._clearCellCaches(columns);
-
-        // Notify external listeners (e.g. pivot adapter) that derived columns
-        // are dirty.  Previously done inside _handleEpoch; moved here so the
-        // notification fires without the infinite epoch cycle.
-        if (columns) {
-            const dirtyDerived = columns.filter(c => this.engine._isDerived(c));
-            if (dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
-            this.engine._notifyColumnChanged(columns);
-        }
-
         api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
         this.dirty.rows.clear();
         this.dirty.cols.clear();
-        if (this.dirty.cells) this.dirty.cells.clear();
+        this.dirty.cells.clear();
     }
 
     _scheduleFlush() {
@@ -6087,11 +5307,12 @@ export class ArrowAgGridAdapter {
             const addLen = (payloads && Array.isArray(payloads.add)) ? payloads.add.length : (payloads?.add ? 1 : 0);
             const updLen = (payloads && Array.isArray(payloads.update)) ? payloads.update.length : (payloads?.update ? 1 : 0);
             const remLen = (payloads && Array.isArray(payloads.remove)) ? payloads.remove.length : (payloads?.remove ? 1 : 0);
-            return {
+            const aa= {
                 applied: 0,
                 skipped: addLen + updLen + remLen,
                 breakdown: { add:{applied:0,skipped:addLen}, update:{applied:0,skipped:updLen}, remove:{applied:0,skipped:remLen} }
             };
+            return aa
         }
 
         const {
@@ -6197,9 +5418,7 @@ export class ArrowAgGridAdapter {
         if (remIdsSet.size) {
             try {
                 const remIds = Array.from(remIdsSet);
-                // console.log('REMOVING:', remIdsSet)
                 const { removedIndices } = engine.removeRowsById(remIds);
-
                 appliedRem = removedIndices.length | 0;
                 skippedRem = remIds.length - appliedRem;
             } catch (e) {
@@ -6277,7 +5496,7 @@ export class ArrowAgGridAdapter {
         if (mergedUpdates.length) {
             const r = await this.applyServerUpdateTransaction(mergedUpdates, {
                 includeAllColumns,
-                commit,
+                commit:true,
                 freezeDerived,
                 emitAsEdit:emitAsEdit
             });
@@ -6340,7 +5559,6 @@ export class ArrowAgGridAdapter {
         // Track coalesced changes
         const changedCols = new Set();
         const changedRowsSet = new Set();
-        const physicalColsChanged = new Set();  // physical cols that need deferred dependent unfreeze
 
         let applied = 0, skipped = 0;
 
@@ -6363,26 +5581,25 @@ export class ArrowAgGridAdapter {
         }
         if (rowWorkMap.size === 0) return { applied: 0, skipped };
 
-        // Pre-cache overlay structures for columns we'll touch repeatedly.
-        // Calling _ensureOverlay once per column instead of per-cell eliminates
-        // redundant normalize + type-detect overhead in hot loops.
-        const overlayCache = new Map();
-        const ensureOv = (col) => {
-            let ov = overlayCache.get(col);
-            if (ov === undefined) {
-                ov = engine._ensureOverlay(col);
-                overlayCache.set(col, ov || null);
-            }
-            return ov;
-        };
+        // Pre-bind frequently used internals to avoid hot-loop prototype lookups
+        const isDerived = engine._isDerived.bind(engine);
+        const getDerived = engine._getDerived.bind(engine);
+        const getRowObject = engine.getRowObject.bind(engine);
+        const setOverlayValue = engine.setOverlayValue.bind(engine);
+        const markFrozen = engine._markFrozen.bind(engine);
+        const unfreezeDependents = engine._unfreezeDependentsOnChange.bind(engine);
 
-        const tracker = { changedCols, changedRows: changedRowsSet, physicalCols: physicalColsChanged };
+        const tracker = { changedCols, changedRows: changedRowsSet };
+        const editPatches = [];
 
         // Apply per row (fold multiple payloads targeting the same row)
         for (const [rowIndex, payloadsForRow] of rowWorkMap.entries()) {
-            const ri = rowIndex | 0;
             const merged = Object.create(null);
-            merged[idKey] = engine.getRowIdByIndex(ri);
+            const patch = Object.create(null);
+
+            const rowId = engine.getRowIdByIndex(rowIndex);
+            merged[idKey] = rowId;
+            patch[idKey] = rowId;
 
             // Fold columns across payloads; last writer wins
             for (let p = 0; p < payloadsForRow.length; p++) {
@@ -6392,6 +5609,7 @@ export class ArrowAgGridAdapter {
                     const col = keys[k];
                     if (col === idKey || col === this._idxProperty) continue;
                     merged[col] = src[col];
+                    patch[col] = src[col]; // sparse: only columns actually present for this row
                 }
             }
 
@@ -6399,64 +5617,53 @@ export class ArrowAgGridAdapter {
             const cols = Object.keys(merged);
             for (let c = 0; c < cols.length; c++) {
                 const col = cols[c];
-                if (col === idKey) continue;
+                if (col === idKey) continue; // IMPORTANT: never treat rowId as an editable column
                 const val = merged[col];
 
                 // DERIVED column path
-                if (engine._derived.has(col)) {
-                    const def = engine._derived.get(col);
+                if (isDerived(col)) {
+                    const def = getDerived(col);
                     const inv = def && typeof def.inverse === 'function' ? def.inverse : null;
 
                     if (inv) {
                         let plan = null;
                         try {
                             const settingsFn = engine._settingsGetter ? engine._settingsGetter.get(col) : null;
-                            plan = inv(ri, val, engine, settingsFn ? settingsFn() : undefined);
-                            if (plan && typeof plan.then === 'function') plan = await plan;
+                            plan = inv((rowIndex | 0), val, engine, settingsFn ? settingsFn() : undefined);
+
+                            // If inverse is async, await it; otherwise applyEditPlanBatch will mis-handle a Promise
+                            if (plan && typeof plan.then === 'function') {
+                                plan = await plan;
+                            }
                         } catch {
                             plan = null;
                         }
-                        // deferUnfreeze: physical cols in plan won't trigger per-cell unfreeze cascade
-                        await engine._applyEditPlanBatch(ri, plan, tracker, { deferUnfreeze: true });
+
+                        await engine._applyEditPlanBatch((rowIndex | 0), plan, tracker);
                     } else {
-                        // No inverse: overlay + freeze (silent, no epoch bump)
-                        const ov = ensureOv(col);
-                        if (ov) engine._overlaySet(ov, ri, val);
-                        if (freezeDerived) engine._markFrozen(col, ri);
+                        // No inverse: overlay + freeze (silent)
+                        setOverlayValue((rowIndex | 0), col, val, { bump: false });
+                        if (freezeDerived) markFrozen(col, (rowIndex | 0));
                         changedCols.add(col);
-                        changedRowsSet.add(ri);
+                        changedRowsSet.add((rowIndex | 0));
                     }
                     continue;
                 }
 
-                // PHYSICAL column path: silent overlay, defer dependent unfreeze to end
-                const ov = ensureOv(col);
-                if (ov) engine._overlaySet(ov, ri, val);
-                physicalColsChanged.add(col);
+                // PHYSICAL column path: silent overlay; unfreeze dependent derived cells
+                setOverlayValue((rowIndex | 0), col, val, { bump: false });
+                unfreezeDependents(col, (rowIndex | 0));
                 changedCols.add(col);
-                changedRowsSet.add(ri);
+                changedRowsSet.add((rowIndex | 0));
             }
 
+            editPatches.push(patch);
             applied++;
         }
 
-        // ---- BATCH UNFREEZE ----
-        // Instead of calling _unfreezeDependentsOnChange per-column per-row (which
-        // triggers O(cols × rows × deps) string-concat + epoch bumps), we do ONE pass:
-        // compute the union of all derived dependents, then bulk-clear their frozen
-        // overlays without any individual epoch bumps. The single coalesced epoch
-        // below covers everything.
-        if (physicalColsChanged.size > 0) {
-            engine._batchUnfreezeDependents(physicalColsChanged, changedRowsSet);
-        }
-
-        // Build one AG update object per changed row.
-        // Only include changed columns + ID to avoid expensive getCell calls
-        // for all projected columns (derived getters, etc.). The valueGetter
-        // reads from getCell() which checks overlays first, so AG Grid doesn't
-        // need the full row data — it just needs to know WHICH rows changed.
-        const changedColsArr = Array.from(changedCols);
-        const colsWanted = includeAllColumns ? engine._fieldNames : changedColsArr;
+        // Build one AG update object per changed row, after all edits are applied
+        let colsWanted = includeAllColumns ? engine._fieldNames : this._projection;
+        colsWanted = colsWanted.filter(col => !col.startsWith('__temp'));
 
         const rowsForAg = [];
         if (changedRowsSet.size) {
@@ -6464,7 +5671,7 @@ export class ArrowAgGridAdapter {
             const it = changedRowsSet.values();
             for (let i = 0; i < totalRows; i++) {
                 const ri = (it.next().value | 0);
-                const obj = engine.getRowObject(ri, colsWanted);
+                const obj = getRowObject(ri, colsWanted);
                 obj[this._idxProperty] = ri;
                 obj[idKey] = engine.getRowIdByIndex(ri);
                 rowsForAg.push(obj);
@@ -6480,9 +5687,9 @@ export class ArrowAgGridAdapter {
             });
         }
 
-        // Optional materialization — scoped to only the columns that changed
-        if ((commit === true) || (commit === 'auto')) {
-            try { await engine._materializeEdits({ commit, columns: changedCols.size ? changedCols : null }); } catch {}
+        // Optional materialization (still a single commit)
+        if (commit === true || commit === 'auto') {
+            try { await engine._materializeEdits({ commit }); } catch {}
         }
 
         // Emit a single coalesced epoch covering all changed rows/cols
@@ -6556,11 +5763,7 @@ export class ArrowAgGridAdapter {
         }
 
         if (redrawFlag && redrawNodes) {
-            setTimeout(()=> {
-                if (this.api && !this.api.isDestroyed?.()) {
-                    this.api.redrawRows({ rowNodes: redrawNodes });
-                }
-            }, 0);
+            setTimeout(()=>this.api.redrawRows({ rowNodes: redrawNodes }), 0);
         }
 
         if (callback) {
@@ -6585,11 +5788,10 @@ export class ArrowAgGridAdapter {
         const result = this.engine.replaceAllRows(rowsOrTable, engineOpts);
         if (clearFilters) { try { this.api?.setFilterModel({}); } catch {} }
         this._syncCacheBlockToEngineSize();
+
         this._scheduleFlush();
         try { this.api?.refreshServerSide({ purge: false }); } catch {}
-        if (result.nextRowCount !== result.previousRowCount) {
-            this._notifyRowCount()
-        }
+
         return result;
     }
 
@@ -6617,9 +5819,7 @@ export class ArrowAgGridAdapter {
         const n = endRow ?? this.engine.numRows();
         if (direction === 1) {
             for (let i=(n-1); i>=startRow; i--) {
-                const node = this.api.getDisplayedRowAtIndex(i);
-                if (!node) continue;
-                const id = node.id;
+                const id = this.api.getDisplayedRowAtIndex(i).id;
                 const ri = this.engine.getRowIndexById(id);
                 const v = this.engine.getCell(ri, name);
                 if (v != null && v !== '') {
@@ -6628,9 +5828,7 @@ export class ArrowAgGridAdapter {
             }
         } else {
             for (let i=startRow; i<n; i++) {
-                const node = this.api.getDisplayedRowAtIndex(i);
-                if (!node) continue;
-                const id = node.id;
+                const id = this.api.getDisplayedRowAtIndex(i).id;
                 const ri = this.engine.getRowIndexById(id);
                 const v = this.engine.getCell(ri, name);
                 if (v != null && v !== '') {
@@ -6646,9 +5844,7 @@ export class ArrowAgGridAdapter {
         const n = endRow ?? this.engine.numRows();
         if (direction === 1) {
             for (let i=(n-1); i>=startRow; i--) {
-                const node = this.api.getDisplayedRowAtIndex(i);
-                if (!node) continue;
-                const id = node.id;
+                const id = this.api.getDisplayedRowAtIndex(i).id;
                 const ri = this.engine.getRowIndexById(id);
                 const v = this.engine.getCell(ri, name);
                 if (v == null || v === '') {
@@ -6657,9 +5853,7 @@ export class ArrowAgGridAdapter {
             }
         } else {
             for (let i=startRow; i<n; i++) {
-                const node = this.api.getDisplayedRowAtIndex(i);
-                if (!node) continue;
-                const id = node.id;
+                const id = this.api.getDisplayedRowAtIndex(i).id;
                 const ri = this.engine.getRowIndexById(id);
                 const v = this.engine.getCell(ri, name);
                 if (v == null || v === '') {
@@ -6680,38 +5874,33 @@ export class ArrowAgGridAdapter {
             const col = this.api.getColumn(colId);
             const colDef = col && col.colDef;
             if (colDef?.width && !force) {
-                return colDef.width;
+                //return colDef.width;
             }
+
+            // console.log('here!')
 
             const mapVal = v => (colDef?.valueFormatter ? colDef.valueFormatter({ value: v }) : v);
-            const n = this.engine.numRows() | 0;
+            const rawVals = this.engine.getColumnValues(colId);
+
+            // Ignore null/undefined; if nothing remains, use min
+            const formatted = rawVals.map(mapVal).filter(v => v != null);
             const min = colDef?.minWidth || defaultMin;
-            if (n === 0) return min;
-
-            // Sample up to 200 evenly-spaced rows instead of reading ALL values
-            const sampleSize = Math.min(n, 200);
-            const step = n / sampleSize;
-            const widths = [];
-            for (let s = 0; s < sampleSize; s++) {
-                const ri = Math.min((s * step) | 0, n - 1);
-                const raw = this.engine.getCell(ri, colId);
-                if (raw == null) continue;
-                const formatted = mapVal(raw);
-                if (formatted == null) continue;
-                const w = measureText(String(formatted)).width;
-                if (w > 0) widths.push(w);
+            if (!formatted.length) {
+                // console.log('retunrning min')
+                return min;
             }
 
-            if (!widths.length) return min;
+            const texts = formatted.map(v => String(v));
+            let widths = texts.map(t => measureText(t).width).filter(t=>(t && t > 0));
 
-            const l = quantileSeq(widths, 0.25);
-            const u = quantileSeq(widths, 0.75);
-            if (widths.length) {
+            const l = maths.quantileSeq(widths, 0.25);
+            const u = maths.quantileSeq(widths, 0.75);
+            if (widths && widths.length) {
                 let ww = widths.filter(w => (l <= w) && (w <= u));
-                if (ww.length < 2) return median(widths) || defaultMin;
-                return mean(ww) || defaultMin;
+                if (ww.length < 2) return maths.median(widths) || defaultMin
+                return maths.mean(ww) || defaultMin
             }
-            return defaultMin;
+            return defaultMin
         } catch {
             return defaultMin;
         }
@@ -6719,3 +5908,5 @@ export class ArrowAgGridAdapter {
 }
 
 export default ArrowEngine;
+
+```

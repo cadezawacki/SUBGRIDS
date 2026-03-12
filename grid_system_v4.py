@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +28,7 @@ from app.services.payload.payloadV4 import (
     User,
     RoomContext,
     DEFAULT_CONFLICT_PRIORITY,
+    MicroPublish,
 )
 from app.services.server.router import PubSubRouter
 from app.helpers.hash import hash_any, hash_as_int
@@ -2459,6 +2461,16 @@ class RuleContext:
                 )
         return ReadDeps(col_deps=tuple(col_deps), row_deps=tuple(row_deps))
 
+    def get_micro_grid_data(self, micro_name: str) -> Optional[pl.DataFrame]:
+        """Access micro-grid snapshot from any rule (main grid or micro-grid).
+        Returns a cloned DataFrame or None if the micro-grid doesn't exist."""
+        try:
+            from app.services.redux.micro_grid import get_micro_actor
+            actor = get_micro_actor(micro_name)
+            return actor.snapshot()
+        except (KeyError, Exception):
+            return None
+
     async def snapshot_running(self, context: Optional[RoomContext] = None) -> int:
         a = self.system.registry.require((context or self.source_context))
         await a.ensure_awake()
@@ -3496,6 +3508,176 @@ class GridSystem:
         finally:
             leases.release_all()
             await log.notify("DONE INGESTING")
+
+    # =========================================================================
+    # Micro-Grid ingestion
+    # =========================================================================
+
+    async def ingest_micro_publish(
+            self,
+            micro_name: str,
+            payloads: Dict[str, Any],
+            user: str = "unknown",
+            trace: Optional[str] = None,
+    ) -> AsyncIterator[MicroPublish]:
+        """
+        Full pipeline for micro-grid edits:
+          1. Apply edit to MicroGridActor
+          2. Yield MicroPublish delta for broadcast
+          3. Run eligible rules inline (no MVCC leasing — micro-grids are simple)
+          4. Persist to DB
+        """
+        from app.services.redux.micro_grid import get_micro_actor
+
+        actor = get_micro_actor(micro_name)
+        config = actor.config
+
+        based_on = await self.clock.next()
+        action_seq = await self.action_clock.next()
+
+        # 1. Apply edit
+        await log.micro('starting apply edit')
+        delta_df = await actor.apply_edit(payloads, user=user)
+        await log.micro('ending apply edit')
+
+        if (delta_df is None) or delta_df.hyper.is_empty():
+            await log.warning(f"[MicroGrid] No changes for {micro_name}")
+            return
+
+        # 2. Build delta payload for broadcast
+        delta_rows = delta_df.to_dicts()
+        add_count = getattr(delta_df, '_micro_add_count', 0)
+        remove_payloads = payloads.get("remove") or []
+
+        broadcast_payloads = {}
+        if remove_payloads:
+            pk_col = config.primary_keys[0]
+            # remove_payloads is List[pl.DataFrame] — extract all PK values
+            removed_ids = []
+            for r in ensure_list(remove_payloads):
+                if r is None:
+                    continue
+                if isinstance(r, pl.DataFrame) and pk_col in r.columns:
+                    removed_ids.extend(r[pk_col].cast(pl.String).to_list())
+                elif isinstance(r, dict):
+                    rid = r.get(pk_col)
+                    if rid is not None:
+                        removed_ids.append(str(rid))
+            if removed_ids:
+                broadcast_payloads["remove"] = [{pk_col: rid} for rid in removed_ids]
+        if add_count > 0:
+            broadcast_payloads["add"] = delta_rows[:add_count]
+        if add_count < len(delta_rows):
+            broadcast_payloads["update"] = delta_rows[add_count:]
+
+        await log.micro("building micro payload")
+        micro_pub = MicroPublish(
+            micro_name=micro_name,
+            payloads=broadcast_payloads,
+            based_on=based_on,
+            action_seq=action_seq,
+            pk_columns=config.primary_keys,
+            trace=trace,
+        )
+        yield micro_pub
+
+        # 3. Rules engine — run eligible rules inline
+        #    Micro-grids don't participate in MVCC snapshot leasing, so we
+        #    cannot use run_ingress() directly. Instead, we find eligible rules
+        #    and execute them manually. Rule outputs targeting this micro-grid
+        #    are applied directly; outputs targeting main grids are ingested
+        #    through the normal pipeline.
+        if config.rules_enabled:
+            room = config.room
+            changed_cols = set(delta_df.columns) - set(config.primary_keys)
+
+            for rdef in self.rules._rules.values():
+                try:
+                    if not rdef.applies_to_room(room):
+                        continue
+
+                    # Check column triggers
+                    if rdef.column_triggers_any:
+                        if not changed_cols.intersection(rdef.column_triggers_any):
+                            continue
+                    if rdef.column_triggers_all:
+                        if not changed_cols.issuperset(rdef.column_triggers_all):
+                            continue
+
+                    # Build a lightweight RuleContext
+                    micro_context = RoomContext(
+                        room=room,
+                        grid_id=config.grid_id,
+                        primary_keys=list(config.primary_keys),
+                    )
+                    target_room = rdef.target_room or room
+                    target_pks = rdef.target_primary_keys or config.primary_keys
+
+                    ctx = RuleContext(
+                        system=self,
+                        leases=SnapshotLeases(self, {}),
+                        source_context=micro_context,
+                        source_room=room,
+                        target_room=target_room,
+                        target_pks=target_pks,
+                        based_on=based_on,
+                        ingress_id=action_seq,
+                        triggering_delta=delta_df,
+                    )
+
+                    # Execute rule
+                    result = await rdef.func(ctx)
+
+                    if result is None:
+                        continue
+
+                    # Normalize result to DataFrame
+                    if isinstance(result, pl.LazyFrame):
+                        result = result.collect()
+                    if not isinstance(result, pl.DataFrame) or result.hyper.is_empty():
+                        continue
+
+                    # Apply rule output
+                    if target_room == room:
+                        # Rule outputs to the same micro-grid — apply directly
+                        rule_payloads = {"update": [result]}
+                        rule_delta = await actor.apply_edit(rule_payloads, user="rule:" + rdef.name)
+
+                        if rule_delta is not None and not rule_delta.hyper.is_empty():
+                            rule_pub = MicroPublish(
+                                micro_name=micro_name,
+                                payloads={"update": rule_delta.to_dicts()},
+                                based_on=based_on,
+                                action_seq=action_seq,
+                                pk_columns=config.primary_keys,
+                                trace=trace,
+                            )
+                            yield rule_pub
+                    else:
+                        # Rule outputs to a main grid — use normal ingest_publish
+                        target_context = RoomContext(
+                            room=target_room,
+                            grid_id=rdef.target_grid_id or target_room.split(".")[-1].lower(),
+                            primary_keys=list(target_pks),
+                        )
+                        pub = self.build_publish_from_df(
+                            context=target_context,
+                            df=result,
+                            mode="update",
+                            trace=trace,
+                        )
+                        async for out_msg in self.ingest_publish(pub):
+                            yield out_msg
+
+                except Exception as e:
+                    await log.error(f"[MicroGrid] Rule '{rdef.name}' error for {micro_name}: {e}")
+
+        # 4. Persist
+        if config.persist:
+            try:
+                await actor.persist()
+            except Exception as e:
+                await log.error(f"[MicroGrid] Persist error for {micro_name}: {e}")
 
     def list_all_actors(self) -> List[ActorStatus]:
         now = _now_ns()
