@@ -255,6 +255,7 @@ export class PortfolioPage extends PageBase {
             highlightMyBonds: true,
             showGridStats: true,
             autoNavigateToPivot: true,
+            impersonateMode: false,
             showPtStatus: true,
             sideText: {'bid': 'bid', 'offer': 'offer'},
             sideColor: {'bid': 'red', 'offer': 'green'}
@@ -322,11 +323,70 @@ export class PortfolioPage extends PageBase {
         this._subs.push(this.gridSettings$.pick('showPtStatus').onRawChanges((ch) => {
             this._updateStatusDisplay();
         }));
+
+        // --- Impersonate Mode ---
+        if (this.impersonateToggle) {
+            this.impersonateToggle.checked = !!this.gridSettings$.get('impersonateMode');
+            this._applyImpersonateVisuals(this.impersonateToggle.checked);
+            this.addEventListener(this.impersonateToggle, 'change', (e) => {
+                const on = e.target.checked;
+                this.gridSettings$.set('impersonateMode', on);
+                this._applyImpersonateVisuals(on);
+            });
+        }
+        this._subs.push(this.gridSettings$.pick('impersonateMode').onRawChanges((ch) => {
+            const on = !!this.gridSettings$.get('impersonateMode');
+            if (this.impersonateToggle) this.impersonateToggle.checked = on;
+            this._applyImpersonateVisuals(on);
+        }));
     }
 
     _updateStatusDisplay({force=false}={}) {
         const show = force || this.gridSettings$.get('showPtStatus');
         this.headerStatusElem.style.display = show ? 'flex' : 'none';
+    }
+
+    _applyImpersonateVisuals(on) {
+        const BORDER_ID = 'impersonate-border-overlay';
+        let overlay = document.getElementById(BORDER_ID);
+
+        if (on) {
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.id = BORDER_ID;
+                Object.assign(overlay.style, {
+                    position: 'fixed',
+                    inset: '0',
+                    pointerEvents: 'none',
+                    zIndex: '99999',
+                    border: '3px solid #ff4444',
+                    boxShadow: 'inset 0 0 12px 2px rgba(255, 68, 68, 0.25)',
+                    borderRadius: '0',
+                    transition: 'opacity 0.2s ease',
+                });
+                document.body.appendChild(overlay);
+            }
+            overlay.style.opacity = '1';
+            if (this.impersonateLabel) {
+                this.impersonateLabel.style.color = '#ff4444';
+                this.impersonateLabel.style.fontWeight = '700';
+            }
+            if (this.impersonateToggle) {
+                this.impersonateToggle.style.setProperty('--tglbg', '#ff4444');
+            }
+        } else {
+            if (overlay) {
+                overlay.style.opacity = '0';
+                setTimeout(() => overlay?.remove(), 200);
+            }
+            if (this.impersonateLabel) {
+                this.impersonateLabel.style.color = 'var(--text-muted, #888)';
+                this.impersonateLabel.style.fontWeight = '500';
+            }
+            if (this.impersonateToggle) {
+                this.impersonateToggle.style.removeProperty('--tglbg');
+            }
+        }
     }
 
     async onCacheDom() {
@@ -381,6 +441,9 @@ export class PortfolioPage extends PageBase {
         this.searchInput?.setAttribute("spellCheck", "false");
         this.searchIcon = document.querySelector('.ag-search-bar-icon');
         this.searchInput.placeholder = '';
+
+        this.impersonateToggle = document.getElementById('impersonate-toggle');
+        this.impersonateLabel = document.getElementById('impersonate-label');
 
         this.copyBtnFull = document.getElementById('copy-summary-btn');
         this.copyBtnShort = document.getElementById('copy-summary-btn-short');

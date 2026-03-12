@@ -523,13 +523,15 @@ export class SubscriptionManager {
 
     _sendBatchedPayload(batchedPayload) {
         const socketManager = this.getSocketManager();
+        const impersonateMode = !!this.context.page?.gridSettings$?.get?.('impersonateMode');
         const payload = {
             action: ACTION_MAP.get("publish"),
             context: batchedPayload.context,
             data: batchedPayload.data,
             options: batchedPayload.options,
             traceId: batchedPayload?.traceId ?? uuidv4(),
-            user: this.context.page.userManager().user_data()
+            user: this.context.page.userManager().user_data(),
+            impersonateMode: impersonateMode,
         };
         return socketManager._sendWebSocketMessage(payload)
                              .catch(e => {
