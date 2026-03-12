@@ -661,10 +661,12 @@ export class SocketManager {
             const modalManager = this.context.page.modalManager();
             if (!modalManager) return true; // fallback: apply silently
 
+            const summary = this._buildQueueSummaryHTML();
             const result = await modalManager.show({
                 title: 'Pending Offline Changes',
                 body: `<p class="mb-2">You have <strong>${count}</strong> unsent edit${count === 1 ? '' : 's'} from a previous session.</p>`
-                    + `<p class="text-sm opacity-70">These changes were made while offline and have not yet been synced to the server.</p>`,
+                    + summary
+                    + `<p class="text-sm opacity-70 mt-2">These changes were made while offline and have not yet been synced to the server.</p>`,
                 preventBackdropClick: true,
                 buttons: [
                     {
@@ -687,6 +689,68 @@ export class SocketManager {
             console.error('Restored edits prompt failed:', err);
             return true; // fallback: apply
         }
+    }
+
+    /**
+     * Build an HTML summary of the queued offline edits, grouped by room.
+     * Shows primary key values and changed columns for each entry.
+     */
+    _buildQueueSummaryHTML() {
+        const entries = Array.from(this.offlineQueue._queue.values());
+        const editEntries = entries.filter(p => {
+            const a = typeof p?.action === 'number' ? ACTION_MAP.get(p.action) : p?.action;
+            return a === 'publish' || a === 'update';
+        });
+        if (editEntries.length === 0) return '';
+
+        // Group by room
+        const byRoom = new Map();
+        for (const entry of editEntries) {
+            const room = entry?.context?.room || 'Unknown';
+            if (!byRoom.has(room)) byRoom.set(room, []);
+            byRoom.get(room).push(entry);
+        }
+
+        let html = '<div style="max-height:200px;overflow-y:auto;margin-top:8px;border:1px solid oklch(0.5 0 0 / 0.15);border-radius:6px;font-size:12px;">';
+        html += '<table style="width:100%;border-collapse:collapse;">';
+        html += '<thead><tr style="background:oklch(0.5 0 0 / 0.06);position:sticky;top:0;">'
+              + '<th style="text-align:left;padding:4px 8px;">Room</th>'
+              + '<th style="text-align:left;padding:4px 8px;">Row Key</th>'
+              + '<th style="text-align:left;padding:4px 8px;">Changed</th>'
+              + '</tr></thead><tbody>';
+
+        for (const [room, items] of byRoom) {
+            for (const item of items) {
+                const pkCols = item?.context?.primary_keys || [];
+                const rows = item?.data?.payloads?.update;
+                const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : {};
+
+                // Build PK display
+                const pkDisplay = pkCols.length > 0
+                    ? pkCols.map(k => `${row?.[k] ?? '?'}`).join(', ')
+                    : '?';
+
+                // Changed columns = row keys minus PK cols
+                const pkSet = new Set(pkCols);
+                const changedCols = Object.keys(row).filter(k => !pkSet.has(k));
+                const changedDisplay = changedCols.length > 0 ? changedCols.join(', ') : '—';
+
+                html += `<tr style="border-top:1px solid oklch(0.5 0 0 / 0.08);">`
+                      + `<td style="padding:3px 8px;white-space:nowrap;opacity:0.7;">${this._escapeHTML(room)}</td>`
+                      + `<td style="padding:3px 8px;font-family:monospace;">${this._escapeHTML(pkDisplay)}</td>`
+                      + `<td style="padding:3px 8px;opacity:0.85;">${this._escapeHTML(changedDisplay)}</td>`
+                      + `</tr>`;
+            }
+        }
+
+        html += '</tbody></table></div>';
+        return html;
+    }
+
+    _escapeHTML(str) {
+        const d = document.createElement('div');
+        d.textContent = String(str);
+        return d.innerHTML;
     }
 
     async identifyUser() {
@@ -942,7 +1006,8 @@ export class SocketManager {
                     color: '#fff',
                     background: 'oklch(0.65 0.19 41.12)',  // warm amber
                     boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
-                    pointerEvents: 'none',
+                    cursor: 'pointer',
+                    pointerEvents: 'auto',
                     transition: 'opacity 0.2s ease',
                     opacity: '0'
                 });
@@ -956,13 +1021,14 @@ export class SocketManager {
                 const label = document.createElement('span');
                 label.className = 'offline-pending-label';
                 badge.appendChild(label);
+                badge.addEventListener('click', () => this._showPendingReviewModal());
                 document.body.appendChild(badge);
                 this._pendingBadge = badge;
                 // Trigger reflow then fade in
                 requestAnimationFrame(() => { badge.style.opacity = '1'; });
             }
             const label = this._pendingBadge.querySelector('.offline-pending-label');
-            if (label) label.textContent = `${count} pending edit${count === 1 ? '' : 's'}`;
+            if (label) label.textContent = `${count} pending row${count === 1 ? '' : 's'}`;
         } else {
             if (this._pendingBadge) {
                 this._pendingBadge.style.opacity = '0';
@@ -970,6 +1036,48 @@ export class SocketManager {
                 this._pendingBadge = null;
                 setTimeout(() => { try { badge.remove(); } catch (_) {} }, 250);
             }
+        }
+    }
+
+    /**
+     * Opt-in review modal – triggered by clicking the floating pending badge.
+     * Shows a table of all queued edits so the user can inspect or discard them.
+     */
+    async _showPendingReviewModal() {
+        if (!this.offlineQueue.hasEdits()) return;
+        try {
+            const modalManager = this.context.page.modalManager();
+            if (!modalManager) return;
+
+            const count = this.offlineQueue.size();
+            const summary = this._buildQueueSummaryHTML();
+
+            const result = await modalManager.show({
+                title: 'Queued Offline Edits',
+                body: `<p class="mb-1 text-sm opacity-70">${count} edit${count === 1 ? '' : 's'} waiting to sync</p>`
+                    + summary,
+                preventBackdropClick: false,
+                buttons: [
+                    {
+                        text: 'Close',
+                        value: 'close',
+                        class: 'btn-sm',
+                        isSubmit: false
+                    },
+                    {
+                        text: 'Discard All',
+                        value: 'discard',
+                        class: 'btn-ghost btn-sm',
+                        isSubmit: false
+                    }
+                ]
+            });
+
+            if (result === 'discard') {
+                this.offlineQueue.clear();
+            }
+        } catch (err) {
+            console.error('Pending review modal failed:', err);
         }
     }
 
