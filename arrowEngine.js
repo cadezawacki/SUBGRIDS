@@ -28,6 +28,16 @@ const _FB = (() => {
     return { crumb, dump: () => log.slice(-30) };
 })();
 if (typeof window !== 'undefined') window.__freezeBreadcrumbs = _FB;
+// Loop guard: throws with stack trace if a loop exceeds maxIter.
+// This breaks infinite loops and makes them visible in the console.
+const _LOOP_LIMIT = 500000;
+const _loopGuard = (label, iter) => {
+    if (iter > _LOOP_LIMIT) {
+        const err = new Error(`[INFINITE LOOP] ${label} exceeded ${_LOOP_LIMIT} iterations`);
+        console.error(err.message, err.stack);
+        throw err;
+    }
+};
 // ============ END FREEZE DIAGNOSTIC ============
 
 import { license } from '@/config/licenses.js';
@@ -2593,7 +2603,7 @@ export class ArrowEngine {
             }
         }
 
-        while (stack.length) {
+        { let __i1 = 0; while (stack.length) { _loopGuard('getDependenciesClosure:outer', ++__i1);
             const current = stack.pop();
             let cached = this._depClosureCache.get(current);
 
@@ -2605,7 +2615,7 @@ export class ArrowEngine {
                     const localVisited = new Set();
                     const dfsStack = Array.from(direct);
 
-                    while (dfsStack.length) {
+                    let __i2 = 0; while (dfsStack.length) { _loopGuard('getDependenciesClosure:dfs', ++__i2);
                         const next = dfsStack.pop();
                         if (localVisited.has(next)) continue;
                         localVisited.add(next);
@@ -2627,7 +2637,7 @@ export class ArrowEngine {
                     stack.push(dep);
                 }
             }
-        }
+        } }
 
         return Array.from(out);
     }
@@ -2646,7 +2656,7 @@ export class ArrowEngine {
             }
         }
 
-        while (stack.length) {
+        { let __i1 = 0; while (stack.length) { _loopGuard('getDependentsClosure:outer', ++__i1);
             const current = stack.pop();
             let cached = this._dependentsClosureCache.get(current);
 
@@ -2658,7 +2668,7 @@ export class ArrowEngine {
                     const localVisited = new Set();
                     const dfsStack = Array.from(direct);
 
-                    while (dfsStack.length) {
+                    let __i2 = 0; while (dfsStack.length) { _loopGuard('getDependentsClosure:dfs', ++__i2);
                         const next = dfsStack.pop();
                         if (localVisited.has(next)) continue;
                         localVisited.add(next);
@@ -2680,7 +2690,7 @@ export class ArrowEngine {
                     stack.push(dep);
                 }
             }
-        }
+        } }
 
         return Array.from(out);
     }
@@ -5841,6 +5851,12 @@ export class ArrowAgGridAdapter {
 
     _getRows(params) {
         _FB.crumb('_getRows ENTER');
+        if (this._inGetRows) {
+            console.error('[REENTRANT] _getRows called while already executing!', new Error().stack);
+            try { params.fail(); } catch {}
+            return;
+        }
+        this._inGetRows = true;
         try {
             const engine = this.engine
             const req = params.request || {};
@@ -5879,7 +5895,7 @@ export class ArrowAgGridAdapter {
         } catch (err) {
             console.error('Datasource.getRows error:', err);
             params.fail();
-        }
+        } finally { this._inGetRows = false; }
     }
 
     _applyCellRange(saved) {
@@ -5919,6 +5935,12 @@ export class ArrowAgGridAdapter {
 
     _handleEpoch(payload) {
         _FB.crumb(`_handleEpoch cols=${payload?.colsChanged} rows=${payload?.rowsChanged}`);
+        if (this._inHandleEpoch) {
+            console.error('[REENTRANT] _handleEpoch called while already executing!', new Error().stack);
+            return;
+        }
+        this._inHandleEpoch = true;
+        try {
         this._invalidateIdxCache();
         const api = this.api;
         if (!api) return;
@@ -6015,6 +6037,7 @@ export class ArrowAgGridAdapter {
                 if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
             } catch {}
         }
+        } finally { this._inHandleEpoch = false; }
     }
 
     _getCurrentSortCols() {
@@ -6058,8 +6081,14 @@ export class ArrowAgGridAdapter {
 
     flush({ suppressFlash = 'auto' } = {}) {
         _FB.crumb('flush ENTER');
+        if (this._inFlush) {
+            console.error('[REENTRANT] flush() called while already executing!', new Error().stack);
+            return;
+        }
+        this._inFlush = true;
+        try {
         this._flushScheduled = false;
-        const api = this.api; if (!api) return;
+        const api = this.api; if (!api) { this._inFlush = false; return; }
 
         const rowNodes = this.dirty.rows.size
             ? Array.from(this.dirty.rows, r => api.getRowNode(this.engine.getRowIdByIndex(r))).filter(Boolean)
@@ -6080,6 +6109,7 @@ export class ArrowAgGridAdapter {
         this.dirty.rows.clear();
         this.dirty.cols.clear();
         if (this.dirty.cells) this.dirty.cells.clear();
+        } finally { this._inFlush = false; }
     }
 
     _scheduleFlush() {
