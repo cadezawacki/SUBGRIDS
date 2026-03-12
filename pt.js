@@ -325,19 +325,16 @@ export class PortfolioPage extends PageBase {
         }));
 
         // --- Impersonate Mode ---
-        if (this.impersonateToggle) {
-            this.impersonateToggle.checked = !!this.gridSettings$.get('impersonateMode');
-            this._applyImpersonateVisuals(this.impersonateToggle.checked);
-            this.addEventListener(this.impersonateToggle, 'change', (e) => {
-                const on = e.target.checked;
+        if (this.impersonateBtn) {
+            this._applyImpersonateVisuals(!!this.gridSettings$.get('impersonateMode'));
+            this.addEventListener(this.impersonateBtn, 'click', () => {
+                const on = !this.gridSettings$.get('impersonateMode');
                 this.gridSettings$.set('impersonateMode', on);
                 this._applyImpersonateVisuals(on);
             });
         }
         this._subs.push(this.gridSettings$.pick('impersonateMode').onRawChanges((ch) => {
-            const on = !!this.gridSettings$.get('impersonateMode');
-            if (this.impersonateToggle) this.impersonateToggle.checked = on;
-            this._applyImpersonateVisuals(on);
+            this._applyImpersonateVisuals(!!this.gridSettings$.get('impersonateMode'));
         }));
     }
 
@@ -367,24 +364,18 @@ export class PortfolioPage extends PageBase {
                 document.body.appendChild(overlay);
             }
             overlay.style.opacity = '1';
-            if (this.impersonateLabel) {
-                this.impersonateLabel.style.color = '#ff4444';
-                this.impersonateLabel.style.fontWeight = '700';
-            }
-            if (this.impersonateToggle) {
-                this.impersonateToggle.style.setProperty('--tglbg', '#ff4444');
+            if (this.impersonateBtn) {
+                this.impersonateBtn.style.color = '#ff4444';
+                this.impersonateBtn.style.fontWeight = '700';
             }
         } else {
             if (overlay) {
                 overlay.style.opacity = '0';
                 setTimeout(() => overlay?.remove(), 200);
             }
-            if (this.impersonateLabel) {
-                this.impersonateLabel.style.color = 'var(--text-muted, #888)';
-                this.impersonateLabel.style.fontWeight = '500';
-            }
-            if (this.impersonateToggle) {
-                this.impersonateToggle.style.removeProperty('--tglbg');
+            if (this.impersonateBtn) {
+                this.impersonateBtn.style.color = 'var(--text-muted, #888)';
+                this.impersonateBtn.style.fontWeight = '500';
             }
         }
     }
@@ -442,8 +433,7 @@ export class PortfolioPage extends PageBase {
         this.searchIcon = document.querySelector('.ag-search-bar-icon');
         this.searchInput.placeholder = '';
 
-        this.impersonateToggle = document.getElementById('impersonate-toggle');
-        this.impersonateLabel = document.getElementById('impersonate-label');
+        this.impersonateBtn = document.getElementById('impersonate-btn');
 
         this.copyBtnFull = document.getElementById('copy-summary-btn');
         this.copyBtnShort = document.getElementById('copy-summary-btn-short');
