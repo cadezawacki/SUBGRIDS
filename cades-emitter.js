@@ -252,7 +252,7 @@ export class CadesEmitter {
         this._assertNotDestroyed();
         if (!event || typeof event !== 'string') throw new TypeError('event must be a non-empty string');
 
-        const { registrar = this._defaultRegistrar, signal } = opts || {};
+        const { registrar = this._defaultRegistrar, signal, debounce } = opts || {};
         const r = this._ensureRegistrar(registrar);
 
         let context = null;
@@ -271,6 +271,10 @@ export class CadesEmitter {
 
         let wrapped = context ? this._wrapContext(original, context) : original;
 
+        if (debounce !== undefined) {
+            wrapped = this._debounce(wrapped, debounce);
+        }
+
         const record = {
             __cadesToken: true,
             event,
@@ -281,6 +285,11 @@ export class CadesEmitter {
             once: (kind === 'once'),
             get handler() { return this.original; },
         };
+
+        if (wrapped.cancel) {
+            record._cancel = wrapped.cancel;
+            record.flush = wrapped.flush;
+        }
 
         // SURGICAL FIX: Prevent 'once' memory leak by self-destructing from the registry on execution
         if (kind === 'once') {
@@ -363,6 +372,8 @@ export class CadesEmitter {
     }
 
     _removeRecord(record) {
+        if (record._cancel) { record._cancel(); record._cancel = null; }
+
         const set = this._registry.get(record.event);
         if (set) {
             set.delete(record);
@@ -397,6 +408,53 @@ export class CadesEmitter {
             handler: rec.original,
             context: rec.context,
         };
+    }
+
+    _debounce(fn, config) {
+        const wait = typeof config === 'number' ? config : config.wait;
+        const leading = typeof config === 'object' && !!config.leading;
+        const trailing = typeof config === 'object' && config.trailing === false ? false : true;
+
+        if (!Number.isFinite(wait) || wait < 0) throw new TypeError('debounce wait must be a non-negative number');
+
+        let timer = null;
+        let lastArgs = null;
+        let canLead = true;
+
+        function debounced(...args) {
+            lastArgs = args;
+
+            if (leading && canLead) {
+                canLead = false;
+                fn(...args);
+                timer = setTimeout(() => { flush(); }, wait);
+                return;
+            }
+
+            clearTimeout(timer);
+            timer = setTimeout(() => { flush(); }, wait);
+        }
+
+        function flush() {
+            clearTimeout(timer);
+            timer = null;
+            if (trailing && lastArgs && !canLead) fn(...lastArgs);
+            lastArgs = null;
+            canLead = true;
+        }
+
+        debounced.cancel = () => {
+            clearTimeout(timer);
+            timer = null;
+            lastArgs = null;
+            canLead = true;
+        };
+
+        debounced.flush = () => {
+            if (timer !== null) flush();
+        };
+
+        return debounced;
     }
 
     _polyfillOnce(emitter, event, fn) {

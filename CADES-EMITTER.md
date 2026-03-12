@@ -12,6 +12,7 @@
   - [AbortController signals](#4-abortcontroller-signals)
   - [Bulk removal with clear()](#5-bulk-removal-with-clear)
 - [Features](#features)
+  - [Debounce](#debounce)
   - [Scoped Subscriptions](#scoped-subscriptions-with-createscope)
   - [Bound Context Subscriptions](#bound-context-subscriptions)
   - [Batch Registration with onMany()](#batch-registration-with-onmany)
@@ -116,6 +117,60 @@ emitter.clear('player:move', 'cozy-sync'); // One event on one registrar
 ---
 
 ## Features
+
+### Debounce
+
+Rate-limit how often a listener fires by passing a `debounce` option. The handler will only execute after emissions have settled for the given number of milliseconds:
+
+```js
+// Only process after mouse stops moving for 150ms
+emitter.on('mouse:move', updateTooltip, undefined, { debounce: 150 });
+```
+
+**Leading edge** — fire immediately on the first call, then lock out until emissions settle:
+
+```js
+// Respond to the first click instantly, ignore spam for 300ms
+emitter.on('ui:click', handleClick, undefined, {
+    debounce: { wait: 300, leading: true },
+});
+```
+
+**Leading-only** (throttle-style) — fire on the leading edge, skip the trailing call:
+
+```js
+emitter.on('player:input', processInput, undefined, {
+    debounce: { wait: 100, leading: true, trailing: false },
+});
+```
+
+**Flush and cancel** — the returned token exposes control methods for pending debounced calls:
+
+```js
+const token = emitter.on('search:type', runQuery, undefined, { debounce: 250 });
+
+// Force the pending call to execute right now (e.g. user pressed Enter)
+token.flush();
+
+// Discard the pending call entirely (e.g. component unmounting)
+token.cancel();
+```
+
+Pending debounced calls are automatically cancelled when a listener is unsubscribed via `offToken`, `off`, `clear`, or `destroy`.
+
+Works with all subscription features — contexts, `once`, `onMany`, scopes, and `AbortController` signals:
+
+```js
+const controller = new AbortController();
+
+emitter.on('resize', obj, 'onResize', {
+    debounce: 200,
+    signal: controller.signal,
+});
+
+// Abort auto-unsubscribes AND cancels the pending debounce
+controller.abort();
+```
 
 ### Scoped Subscriptions with `createScope()`
 
