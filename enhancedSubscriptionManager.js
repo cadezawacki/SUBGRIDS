@@ -120,8 +120,8 @@ export class SubscriptionManager {
                 const meta = this._room_filters.get(upperRoom) || {};
                 const ctx = { ...(meta || {}) };
 
-                console.debug('reconnecting to...', upperRoom, ctx)
-                await this.updateSubscriptionFilter(upperRoom, ctx, {}, {wait:options.wait});
+                console.debug('[reconnect] re-subscribing to', upperRoom, ctx);
+                await this.subscribeToRoom(upperRoom, ctx, {force: true}, {wait: options.wait});
                 if (rateLimitMs > 0) await new Promise(r => setTimeout(r, rateLimitMs));
             } catch (err) {
                 console.error(`Failed to replay room ${upperRoom}:`, err);

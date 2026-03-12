@@ -19,12 +19,17 @@ const MAX_MESSAGE_RETRIES = 3;
 /**
  * OfflineEditQueue – bounded, deduplicated queue for offline edits.
  *
- * - Per-cell last-write-wins deduplication for publish/update payloads
- *   (keyed by `action + ":" + payload.data?.cell_id` when present).
+ * - Per-row last-write-wins deduplication for publish/update payloads
+ *   keyed by primary-key values (room:grid_id:pk1=v1|pk2=v2).
+ * - Multi-row batched publishes are decomposed into single-row entries
+ *   so each row can be independently deduped.
  * - Bounded to `maxSize` entries; when full the oldest non-transactional
  *   message is evicted (backpressure).
  * - Persisted to localStorage under `__offline_edit_queue` so edits
  *   survive page refreshes while offline.
+ * - Exposes `onSizeChange(fn)` for live pending-count indicators.
+ * - Sets `hadRestoredEdits = true` when edits are recovered from a
+ *   previous session so the caller can prompt the user.
  */
 class OfflineEditQueue {
     constructor(maxSize = 2000) {
@@ -34,30 +39,74 @@ class OfflineEditQueue {
         this._persistTimer = null;
         this._uniqueCounter = 0;
         this._storageKey = '__offline_edit_queue';
+        /** True when _restore() found pending edits from a previous session. */
+        this.hadRestoredEdits = false;
+        /** Listeners notified on every size change: fn(newSize) */
+        this._sizeListeners = new Set();
         this._restore();
     }
 
+    /** Subscribe to queue size changes. Returns an unsubscribe function. */
+    onSizeChange(fn) {
+        this._sizeListeners.add(fn);
+        return () => this._sizeListeners.delete(fn);
+    }
+
+    _notifySizeChange() {
+        const sz = this._queue.size;
+        for (const fn of this._sizeListeners) {
+            try { fn(sz); } catch (_) {}
+        }
+    }
+
     /**
-     * Build a dedup key.  For cell-level publish/update messages we key
-     * on action + cell_id so only the latest edit per cell is kept.
+     * Build a dedup key.  For publish/update messages we key on the
+     * primary-key values extracted from the payload so only the latest
+     * edit per row (per room/grid) is kept.
      * Everything else gets a unique key (no dedup).
      */
     _keyFor(payload) {
         if (payload?._offlineKey) {
             return payload._offlineKey;
         }
-        const cellId = payload?.data?.cell_id;
         const action = payload?.action;
-        const isEditAction =
-            typeof action === 'string'
-                ? ['publish', 'update'].includes(action)
-                : typeof action === 'number'
-                    ? ['publish', 'update'].includes(ACTION_MAP.get(action))
-                    : false;
-        if (cellId && isEditAction) {
-            return `${action}:${cellId}`;
+        const actionName =
+            typeof action === 'string' ? action
+                : typeof action === 'number' ? ACTION_MAP.get(action)
+                    : null;
+        const isEditAction = actionName === 'publish' || actionName === 'update';
+
+        if (isEditAction) {
+            const pkKey = this._extractPrimaryKeyHash(payload);
+            if (pkKey) return `${actionName}:${pkKey}`;
         }
         return `__unique_${++this._uniqueCounter}`;
+    }
+
+    /**
+     * Derive a stable dedup hash from the payload's primary-key values.
+     * Returns "ROOM:grid_id:pk1=v1|pk2=v2" or null if PKs can't be resolved.
+     */
+    _extractPrimaryKeyHash(payload) {
+        const ctx = payload?.context || {};
+        const room = ctx.room || '';
+        const gridId = ctx.grid_id || '';
+        const pkCols = ctx.primary_keys;
+        if (!Array.isArray(pkCols) || pkCols.length === 0) return null;
+
+        // Batched publishes carry rows in data.payloads.update (array)
+        const rows = payload?.data?.payloads?.update;
+        if (Array.isArray(rows) && rows.length === 1) {
+            const row = rows[0];
+            const parts = pkCols.map(k => `${k}=${row?.[k] ?? ''}`);
+            return `${room}:${gridId}:${parts.join('|')}`;
+        }
+
+        // Legacy single-cell with data.cell_id
+        const cellId = payload?.data?.cell_id;
+        if (cellId) return `${room}:${gridId}:cell_id=${cellId}`;
+
+        return null;
     }
 
     /** Returns true when the payload must not be evicted for backpressure. */
@@ -74,11 +123,35 @@ class OfflineEditQueue {
     }
 
     /**
-     * Enqueue a payload.  Deduplicates cell-level edits (last-write-wins)
+     * Enqueue a payload.  Deduplicates edits (last-write-wins per primary key)
      * and enforces the bounded size limit by dropping the oldest
      * non-transactional message when the queue is full.
+     *
+     * Multi-row batched publish payloads are decomposed into individual
+     * single-row entries so that each row can be independently deduped.
      */
     enqueue(payload) {
+        // Decompose multi-row publish batches into per-row entries
+        const actionName =
+            typeof payload?.action === 'string' ? payload.action
+                : typeof payload?.action === 'number' ? ACTION_MAP.get(payload.action)
+                    : null;
+        const rows = payload?.data?.payloads?.update;
+        if ((actionName === 'publish' || actionName === 'update') && Array.isArray(rows) && rows.length > 1) {
+            for (const row of rows) {
+                const single = {
+                    ...payload,
+                    data: { ...payload.data, payloads: { ...payload.data.payloads, update: [row] } },
+                    _offlineKey: undefined  // force re-keying
+                };
+                this._enqueueOne(single);
+            }
+            return;
+        }
+        this._enqueueOne(payload);
+    }
+
+    _enqueueOne(payload) {
         const key = this._keyFor(payload);
         payload._offlineKey = key;
 
@@ -107,6 +180,7 @@ class OfflineEditQueue {
 
         this._queue.set(key, payload);
         this._schedulePersist();
+        this._notifySizeChange();
     }
 
     /** Peek at the first queued payload without removing it. */
@@ -122,6 +196,7 @@ class OfflineEditQueue {
         const [key, value] = firstEntry.value;
         this._queue.delete(key);
         this._schedulePersist();
+        this._notifySizeChange();
         return value;
     }
 
@@ -134,6 +209,7 @@ class OfflineEditQueue {
     clear() {
         this._queue.clear();
         this._clearStorage();
+        this._notifySizeChange();
     }
 
     /** True when there is at least one queued edit. */
@@ -172,6 +248,9 @@ class OfflineEditQueue {
                 if (Array.isArray(entries)) {
                     for (const [key, value] of entries) {
                         this._queue.set(key, value);
+                    }
+                    if (this._queue.size > 0) {
+                        this.hadRestoredEdits = true;
                     }
                 }
             }
@@ -554,10 +633,59 @@ export class SocketManager {
             console.error("replayKnownRooms failed:", err);
         }
 
+        // If we found edits restored from a previous session, ask the user first
+        if (this.offlineQueue.hadRestoredEdits && this.offlineQueue.hasEdits()) {
+            this.offlineQueue.hadRestoredEdits = false;
+            const shouldApply = await this._promptRestoredEdits();
+            if (!shouldApply) {
+                this.offlineQueue.clear();
+                return;
+            }
+        }
+
         try {
             await this._processMessageBuffer(100);
         } catch (err) {
             console.error("processMessageBuffer failed:", err);
+        }
+    }
+
+    /**
+     * Show a modal asking the user whether to apply offline edits
+     * that were restored from localStorage (i.e. from a previous session).
+     * Returns true to apply, false to discard.
+     */
+    async _promptRestoredEdits() {
+        const count = this.offlineQueue.size();
+        try {
+            const modalManager = this.context.page.modalManager();
+            if (!modalManager) return true; // fallback: apply silently
+
+            const result = await modalManager.show({
+                title: 'Pending Offline Changes',
+                body: `<p class="mb-2">You have <strong>${count}</strong> unsent edit${count === 1 ? '' : 's'} from a previous session.</p>`
+                    + `<p class="text-sm opacity-70">These changes were made while offline and have not yet been synced to the server.</p>`,
+                preventBackdropClick: true,
+                buttons: [
+                    {
+                        text: `Apply ${count} Change${count === 1 ? '' : 's'}`,
+                        value: 'apply',
+                        class: 'btn-primary',
+                        isSubmit: false
+                    },
+                    {
+                        text: 'Discard',
+                        value: 'discard',
+                        class: 'btn-ghost',
+                        isSubmit: false
+                    }
+                ]
+            });
+
+            return result === 'apply';
+        } catch (err) {
+            console.error('Restored edits prompt failed:', err);
+            return true; // fallback: apply
         }
     }
 
@@ -727,6 +855,9 @@ export class SocketManager {
     }
 
     _setupConnectionMonitoring() {
+        // Wire up the pending-changes indicator
+        this._setupPendingIndicator();
+
         this.connection$.onValueAddedOrChanged('mnemonic', (newValue, oldValue) => {
             const value = newValue;
 
@@ -763,6 +894,83 @@ export class SocketManager {
                 }
             }
         });
+    }
+
+    /**
+     * Create a small floating badge that shows the count of pending offline edits.
+     * Appears only when count > 0 and the socket is disconnected/reconnecting.
+     */
+    _setupPendingIndicator() {
+        this._pendingBadge = null;
+        this.offlineQueue.onSizeChange((size) => this._updatePendingIndicator(size));
+    }
+
+    _updatePendingIndicator(count) {
+        // Try the existing pivot DOM element first
+        const pivotEl = typeof document !== 'undefined'
+            ? document.getElementById('pivot-pending-count')
+            : null;
+        if (pivotEl) {
+            if (count > 0) {
+                pivotEl.textContent = `${count} pending`;
+                pivotEl.style.display = '';
+            } else {
+                pivotEl.textContent = '';
+                pivotEl.style.display = 'none';
+            }
+        }
+
+        // Floating badge (always visible regardless of page)
+        if (typeof document === 'undefined') return;
+        if (count > 0) {
+            if (!this._pendingBadge) {
+                const badge = document.createElement('div');
+                badge.id = 'offline-pending-badge';
+                badge.setAttribute('aria-live', 'polite');
+                Object.assign(badge.style, {
+                    position: 'fixed',
+                    bottom: '16px',
+                    right: '16px',
+                    zIndex: '9998',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '6px 14px',
+                    borderRadius: '9999px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    color: '#fff',
+                    background: 'oklch(0.65 0.19 41.12)',  // warm amber
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+                    pointerEvents: 'none',
+                    transition: 'opacity 0.2s ease',
+                    opacity: '0'
+                });
+                // Small dot icon
+                const dot = document.createElement('span');
+                Object.assign(dot.style, {
+                    width: '8px', height: '8px', borderRadius: '50%',
+                    background: '#fff', display: 'inline-block', flexShrink: '0'
+                });
+                badge.appendChild(dot);
+                const label = document.createElement('span');
+                label.className = 'offline-pending-label';
+                badge.appendChild(label);
+                document.body.appendChild(badge);
+                this._pendingBadge = badge;
+                // Trigger reflow then fade in
+                requestAnimationFrame(() => { badge.style.opacity = '1'; });
+            }
+            const label = this._pendingBadge.querySelector('.offline-pending-label');
+            if (label) label.textContent = `${count} pending edit${count === 1 ? '' : 's'}`;
+        } else {
+            if (this._pendingBadge) {
+                this._pendingBadge.style.opacity = '0';
+                const badge = this._pendingBadge;
+                this._pendingBadge = null;
+                setTimeout(() => { try { badge.remove(); } catch (_) {} }, 250);
+            }
+        }
     }
 
     _showConnectionToast(type, customMessage) {
