@@ -4256,8 +4256,13 @@ export class ArrowAgGridAdapter {
         this.searchManager = new GlobalSearchManager(this);
 
         this._em = this.context.page.emitter;
-        this._onEpoch = this._handleEpoch.bind(this);
-        this._offEpoch = this.engine.onEpochChange(this._onEpoch);
+        // _handleEpoch disabled: flush() already expands dependents via
+        // getDependentsClosure and clears cell caches.  The epoch listener was
+        // redundant and caused an infinite cycle (grid$.set → settings listener
+        // → _bumpColEpochByName → _emitEpochChange → _handleEpoch → refreshServerSide
+        // → _getRows → grid$.set → ∞).
+        this._onEpoch = null;
+        this._offEpoch = null;
 
         this._memo = memoize;
         this._guessWidth = this._guessWidthRaw // this._memo(this._guessWidthRaw.bind(this));
@@ -6042,6 +6047,10 @@ export class ArrowAgGridAdapter {
         }
 
         suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
+
+        // Clear cached class-rules / formatters for dirty columns so refreshCells
+        // picks up fresh values.  Previously handled by _handleEpoch.
+        if (columns) this.engine._clearCellCaches(columns);
 
         api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
