@@ -1232,6 +1232,9 @@ class GridActor:
     _persist_dirty_cols_by_row: Dict[int, Set[int]] = field(default_factory=dict)
     _persist_deleted_rows: Set[int] = field(default_factory=set)
 
+    # Track which ingress last wrote each column (for same-ingress dep filtering)
+    _col_last_write_ingress: Dict[int, int] = field(default_factory=dict)
+
     def __post_init__(self):
         self.room = self.context.room
         self.grid_id = self.context.grid_id
@@ -1596,6 +1599,9 @@ class GridActor:
                         self.store._commit_seq_committed = candidate_seq
                         commit_seq = candidate_seq
                         did_commit = True
+                        # Track which ingress wrote each surviving column
+                        for _sc_id in survivors.updates_by_col:
+                            self._col_last_write_ingress[_sc_id] = req.ingress_id
                     else:
                         # no survivors => no state change => do not tick commit seq
                         commit_seq = self.store._commit_seq_committed
@@ -1672,6 +1678,10 @@ class GridActor:
                 for cid in d.col_ids:
                     last = src.store.col_last_write.get(cid, 0)
                     if last > d.snapshot_seq:
+                        # Skip if the column was written by a sibling rule
+                        # in the same ingress — not a true upstream conflict.
+                        if src._col_last_write_ingress.get(cid) == req.ingress_id:
+                            continue
                         return CellPatch({}), patch.cell_count()
 
         # 2) Row-local deps: invalidate only stale rows (only if dep.grid_id matches this grid)
@@ -2260,6 +2270,7 @@ class GridActor:
             async with self._persist_lock:
                 self._persist_dirty_cols_by_row.clear()
                 self._persist_deleted_rows.clear()
+        self._col_last_write_ingress.clear()
 
 # =============================================================================
 # Rule defs
