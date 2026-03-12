@@ -88,6 +88,7 @@ function makeCellEventPayload(baseEvent, rowNode, column, colDef, newValue) {
         value: newValue,
         newValue,
         oldValue: currentData[field],
+        __isDelete: newValue === null,
     };
 }
 
@@ -4826,7 +4827,7 @@ export class ArrowAgGridAdapter {
                     if (!hasRange) {
                         const field = e?.colDef?.field;
                         if (!field) return adapter.onKeyDown(e);
-                        const singlePayload = { ...e, data: { ...e.data, [field]: null } };
+                        const singlePayload = { ...e, data: { ...e.data, [field]: null }, __isDelete: true };
                         return adapter._processValueChange(singlePayload);
                     }
 
@@ -5103,7 +5104,7 @@ export class ArrowAgGridAdapter {
 
         const newValue = e.data[colId];
         const oldValue = this.engine.getCell(ri, colId);
-        if (!didCellValueActuallyChange(oldValue, newValue)) return
+        if (!e.__isDelete && !didCellValueActuallyChange(oldValue, newValue)) return
 
         const colDef =
             (e.column && typeof e.column.getColDef === 'function' && e.column.getColDef()) ||
