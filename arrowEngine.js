@@ -1,45 +1,5 @@
 
 
-// ============ FREEZE DIAGNOSTIC — remove after debugging ============
-const _FB = (() => {
-    const log = [];
-    const MAX = 200;
-    let seq = 0;
-    const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
-    const crumb = (tag) => {
-        const entry = `${++seq} [${now().toFixed(1)}ms] ${tag}`;
-        log.push(entry);
-        if (log.length > MAX) log.shift();
-    };
-    // Watchdog: if the main thread is blocked, this won't fire until unblock.
-    // But it will print the last breadcrumbs BEFORE the block started.
-    let lastCheck = now();
-    const WATCHDOG_MS = 2000;
-    const watchdog = () => {
-        const elapsed = now() - lastCheck;
-        if (elapsed > WATCHDOG_MS) {
-            console.error(`[FREEZE] Main thread blocked for ${elapsed.toFixed(0)}ms. Last ${Math.min(log.length, 30)} breadcrumbs:`);
-            const tail = log.slice(-30);
-            for (let i = 0; i < tail.length; i++) console.warn(`  ${tail[i]}`);
-        }
-        lastCheck = now();
-    };
-    setInterval(watchdog, 500);
-    return { crumb, dump: () => log.slice(-30) };
-})();
-if (typeof window !== 'undefined') window.__freezeBreadcrumbs = _FB;
-// Loop guard: throws with stack trace if a loop exceeds maxIter.
-// This breaks infinite loops and makes them visible in the console.
-const _LOOP_LIMIT = 500000;
-const _loopGuard = (label, iter) => {
-    if (iter > _LOOP_LIMIT) {
-        const err = new Error(`[INFINITE LOOP] ${label} exceeded ${_LOOP_LIMIT} iterations`);
-        console.error(err.message, err.stack);
-        throw err;
-    }
-};
-// ============ END FREEZE DIAGNOSTIC ============
-
 import { license } from '@/config/licenses.js';
 import { LicenseManager, createGrid} from 'ag-grid-enterprise';
 LicenseManager.setLicenseKey(license);
@@ -759,7 +719,6 @@ class EditSignalCoalescer {
     }
 
     _beginFlush() {
-        _FB.crumb(`_beginFlush ENTER frontSize=${this._front.size}`);
         if (this._flushing || this._disposed) return;
         this._scheduled = false;
         if (this._front.size === 0) return;
@@ -783,7 +742,6 @@ class EditSignalCoalescer {
     }
 
     _runSlice() {
-        _FB.crumb(`_runSlice ENTER entries=${this._sliceEntries?.length} idx=${this._sliceIdx}`);
         if (!this._flushing || this._disposed) return;
 
         const start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -848,7 +806,6 @@ class EditSignalCoalescer {
     }
 
     _emitBatch(batch) {
-        _FB.crumb(`_emitBatch ENTER len=${batch?.length}`);
         if (this._disposed) return;
 
         const promises = [];
@@ -1119,6 +1076,7 @@ export class ArrowEngine {
         this._useEpochCache = !!useEpochCache;
         this._epochQueue = [];
         this._epochScheduled = false;
+        this._suppressEpochEmit = false;
         this._dtypes = null;
 
         this._pool = new TypedArrayPool();
@@ -1255,18 +1213,17 @@ export class ArrowEngine {
     onTableWillReplace(fn){return this._em.on('table-will-replace', fn);}
     onTableDidReplace(fn){return this._em.on('table-did-replace', fn);}
     _emitEpochChange(payload, event='epoch-change') {
-        _FB.crumb(`_emitEpochChange cols=${payload?.colsChanged} rows=${payload?.rowsChanged}`);
+        // Suppress epoch emissions triggered as side-effects of _handleEpoch
+        // (e.g. _getRows → grid$.set → settings listener → _bumpColEpochByName).
+        // These are rendering reflections, not new data — re-emitting them causes
+        // an infinite cycle: _handleEpoch → refreshServerSide → _getRows → grid$.set
+        // → settings onChanges → _bumpColEpochByName → _emitEpochChange → _handleEpoch → ∞
+        if (this._suppressEpochEmit) return;
+
         this._epochQueue.push(payload);
         if (!this._epochScheduled) {
             this._epochScheduled = true;
-            // Use setTimeout instead of queueMicrotask to yield to the event loop.
-            // queueMicrotask creates a synchronous chain:
-            //   _emitEpochChange → microtask → emitAsync('epoch-change') → microtask
-            //   → _handleEpoch → refreshServerSide → _getRows (sync filter+sort)
-            //   → _notifyDerivedDirty → emitAsync → microtask → ...
-            // All microtasks run before the browser renders, blocking the main thread.
             setTimeout(() => {
-                // Swap the queue out atomically to avoid splice copy overhead
                 const batch = this._epochQueue;
                 this._epochQueue = [];
                 this._epochScheduled = false;
@@ -2036,7 +1993,6 @@ export class ArrowEngine {
 
     /* ------------------------------- persistence ----------------------------- */
     async persistEdit(rowIndex, column, value){
-        _FB.crumb(`persistEdit ENTER row=${rowIndex} col=${column}`);
         const name = this._normalizeColumnSelector(column)[0];
         if (!this._nameToVector.has(name)){
             throw new Error(`persistEdit: "${name}" is not a physical Arrow column`);
@@ -2103,7 +2059,6 @@ export class ArrowEngine {
     }
 
     async applyValue(rowIndex, column, raw, colDef){
-        _FB.crumb(`applyValue ENTER row=${rowIndex} col=${column}`);
         const name = this._normalizeColumnSelector(column)[0];
         let typeHint = colDef?.context?.dataType
 
@@ -2603,7 +2558,7 @@ export class ArrowEngine {
             }
         }
 
-        { let __i1 = 0; while (stack.length) { _loopGuard('getDependenciesClosure:outer', ++__i1);
+        while (stack.length) {
             const current = stack.pop();
             let cached = this._depClosureCache.get(current);
 
@@ -2615,7 +2570,7 @@ export class ArrowEngine {
                     const localVisited = new Set();
                     const dfsStack = Array.from(direct);
 
-                    let __i2 = 0; while (dfsStack.length) { _loopGuard('getDependenciesClosure:dfs', ++__i2);
+                    while (dfsStack.length) {
                         const next = dfsStack.pop();
                         if (localVisited.has(next)) continue;
                         localVisited.add(next);
@@ -2637,7 +2592,7 @@ export class ArrowEngine {
                     stack.push(dep);
                 }
             }
-        } }
+        }
 
         return Array.from(out);
     }
@@ -2656,7 +2611,7 @@ export class ArrowEngine {
             }
         }
 
-        { let __i1 = 0; while (stack.length) { _loopGuard('getDependentsClosure:outer', ++__i1);
+        while (stack.length) {
             const current = stack.pop();
             let cached = this._dependentsClosureCache.get(current);
 
@@ -2668,7 +2623,7 @@ export class ArrowEngine {
                     const localVisited = new Set();
                     const dfsStack = Array.from(direct);
 
-                    let __i2 = 0; while (dfsStack.length) { _loopGuard('getDependentsClosure:dfs', ++__i2);
+                    while (dfsStack.length) {
                         const next = dfsStack.pop();
                         if (localVisited.has(next)) continue;
                         localVisited.add(next);
@@ -2690,7 +2645,7 @@ export class ArrowEngine {
                     stack.push(dep);
                 }
             }
-        } }
+        }
 
         return Array.from(out);
     }
@@ -2769,7 +2724,6 @@ export class ArrowEngine {
      * @param {Set|null} scopeCols - if provided, only rebuild these columns (others left as-is)
      */
     _materializeEditsInner(commit, scopeCols) {
-        _FB.crumb(`_materializeEditsInner ENTER commit=${commit} overlays=${this._overlays.size} rows=${this.numRows()}`);
         const n = this.numRows() | 0;
         if (this._overlays.size === 0 || n === 0) return this.table;
 
@@ -5131,7 +5085,6 @@ export class ArrowAgGridAdapter {
     }
 
     _processValueChange(e) {
-        _FB.crumb(`_processValueChange ENTER col=${e?.column?.getColId?.() ?? e?.colDef?.field}`);
         if (!e) return;
 
         const colId =
@@ -5783,7 +5736,6 @@ export class ArrowAgGridAdapter {
     };
 
     evaluateFilterModel(filterModel) {
-        _FB.crumb(`evaluateFilterModel ENTER keys=${Object.keys(filterModel||{}).length}`);
         const engine = this.engine;
         const keys = Object.keys(filterModel || {});
         const n = engine.numRows() | 0;
@@ -5850,13 +5802,6 @@ export class ArrowAgGridAdapter {
     };
 
     _getRows(params) {
-        _FB.crumb('_getRows ENTER');
-        if (this._inGetRows) {
-            console.error('[REENTRANT] _getRows called while already executing!', new Error().stack);
-            try { params.fail(); } catch {}
-            return;
-        }
-        this._inGetRows = true;
         try {
             const engine = this.engine
             const req = params.request || {};
@@ -5895,7 +5840,7 @@ export class ArrowAgGridAdapter {
         } catch (err) {
             console.error('Datasource.getRows error:', err);
             params.fail();
-        } finally { this._inGetRows = false; }
+        }
     }
 
     _applyCellRange(saved) {
@@ -5934,12 +5879,15 @@ export class ArrowAgGridAdapter {
     }
 
     _handleEpoch(payload) {
-        _FB.crumb(`_handleEpoch cols=${payload?.colsChanged} rows=${payload?.rowsChanged}`);
         if (this._inHandleEpoch) {
             console.error('[REENTRANT] _handleEpoch called while already executing!', new Error().stack);
             return;
         }
         this._inHandleEpoch = true;
+        // Suppress epoch emissions during epoch handling — any _emitEpochChange
+        // calls triggered by refreshServerSide/grid$.set/settings listeners are
+        // side-effects of rendering, not new data changes.
+        this.engine._suppressEpochEmit = true;
         try {
         this._invalidateIdxCache();
         const api = this.api;
@@ -5985,7 +5933,6 @@ export class ArrowAgGridAdapter {
             // If global rows or global cols, let SSRM refresh
             const bigRefresh = (rows === true) || (allCols === true) || (!rows && !allCols);
             if (bigRefresh) {
-                _FB.crumb('_handleEpoch → refreshServerSide(bigRefresh)');
                 api.refreshServerSide?.({ purge: false });
                 this._applyCellRange(saved);
                 this.engine._notifyColumnChanged(allCols);
@@ -6037,7 +5984,7 @@ export class ArrowAgGridAdapter {
                 if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
             } catch {}
         }
-        } finally { this._inHandleEpoch = false; }
+        } finally { this.engine._suppressEpochEmit = false; this._inHandleEpoch = false; }
     }
 
     _getCurrentSortCols() {
@@ -6080,15 +6027,8 @@ export class ArrowAgGridAdapter {
     markRow(rowIndex) { this.dirty.rows.add(rowIndex|0); this._scheduleFlush(); }
 
     flush({ suppressFlash = 'auto' } = {}) {
-        _FB.crumb('flush ENTER');
-        if (this._inFlush) {
-            console.error('[REENTRANT] flush() called while already executing!', new Error().stack);
-            return;
-        }
-        this._inFlush = true;
-        try {
         this._flushScheduled = false;
-        const api = this.api; if (!api) { this._inFlush = false; return; }
+        const api = this.api; if (!api) return;
 
         const rowNodes = this.dirty.rows.size
             ? Array.from(this.dirty.rows, r => api.getRowNode(this.engine.getRowIdByIndex(r))).filter(Boolean)
@@ -6103,13 +6043,11 @@ export class ArrowAgGridAdapter {
 
         suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
 
-        _FB.crumb(`flush → refreshCells rows=${rowNodes?.length} cols=${columns?.length}`);
         api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
         this.dirty.rows.clear();
         this.dirty.cols.clear();
         if (this.dirty.cells) this.dirty.cells.clear();
-        } finally { this._inFlush = false; }
     }
 
     _scheduleFlush() {
@@ -6125,7 +6063,6 @@ export class ArrowAgGridAdapter {
 
     /* -------------------------- transactions  ----------------------- */
     async applyServerTransaction(payloads, opts = {}) {
-        _FB.crumb(`applyServerTransaction ENTER add=${payloads?.add?.length||0} upd=${payloads?.update?.length||0} rem=${payloads?.remove?.length||0}`);
         const api = this.api;
         const engine = this.engine;
         if (!api || !engine) {
@@ -6361,7 +6298,6 @@ export class ArrowAgGridAdapter {
     }
 
     async applyServerUpdateTransaction(updates, opts = {}) {
-        _FB.crumb(`applyServerUpdateTransaction ENTER len=${Array.isArray(updates)?updates.length:0}`);
         const api = this.api;
         const engine = this.engine;
         if (!api || !engine) {
