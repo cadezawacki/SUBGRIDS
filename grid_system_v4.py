@@ -1697,6 +1697,9 @@ class GridActor:
                 rr = int(r)
                 for cid in d.col_ids:
                     if self.store.cell_latest_commit_seq(rr, cid) > d.snapshot_seq:
+                        # Skip if the column was written by the same ingress
+                        if self._col_last_write_ingress.get(cid) == req.ingress_id:
+                            continue
                         invalid_rows.add(rr)
                         break
 
