@@ -69,7 +69,7 @@ export class ProgressCellRenderer {
         if (percentage > 0) {
             const fill = document.createElement('div');
             fill.className = 'progress-bar-fill';
-            fill.style.cssText = `width:${percentage}%;height:100%;background:${fillColor};border-radius:${config.barHeight/2}px;transition:none`;
+            fill.style.cssText = `width:${percentage}%;height:100%;background:${fillColor};border-radius:${config.barHeight/2}px;transition:width 0.4s ease, background-color 0.4s ease`;
             barContainer.appendChild(fill);
         }
 
@@ -109,6 +109,7 @@ export class ProgressCellRenderer {
         progressCircle.setAttribute('stroke-dasharray', circumference);
         progressCircle.setAttribute('stroke-dashoffset', offset);
         progressCircle.setAttribute('stroke-linecap', 'round');
+        progressCircle.style.transition = 'stroke-dashoffset 0.4s ease, stroke 0.4s ease';
 
         svg.appendChild(bgCircle);
         if (percentage > 0) {
@@ -151,13 +152,56 @@ export class ProgressCellRenderer {
         return this.eGui;
     }
 
-    // Optional: Implement refresh for dynamic updates
+    // Smooth in-place refresh to avoid flash on pivot grid updates
     refresh(params) {
-        // For performance, we recreate instead of updating
-        const oldGui = this.eGui;
-        this.init(params);
-        if (oldGui && oldGui.parentNode) {
-            oldGui.parentNode.replaceChild(this.eGui, oldGui);
+        const config = { ...this.defaultConfig, ...(params.config || {}) };
+
+        let value = Number(params.value);
+        if (typeof value === 'string') value = parseFloat(value);
+        if (typeof value !== 'number' || isNaN(value)) value = 0;
+        if (value <= 1 && value > 0) value *= 100;
+        const percentage = Math.max(0, Math.min(100, value));
+        const fillColor = this.getColorForPercentage(percentage, config.colorThresholds);
+
+        if (config.type === 'circle') {
+            // Update circle progress in-place
+            const progressCircle = this.eGui.querySelector('circle:nth-child(2)');
+            const textEl = this.eGui.querySelector('.progress-text-overlay');
+            if (progressCircle) {
+                const size = config.size || this.defaultConfig.size;
+                const strokeWidth = 3;
+                const radius = (size - strokeWidth) / 2;
+                const circumference = 2 * Math.PI * radius;
+                const offset = circumference - (percentage / 100) * circumference;
+                progressCircle.setAttribute('stroke-dashoffset', offset);
+                progressCircle.setAttribute('stroke', fillColor);
+            }
+            if (textEl) {
+                textEl.textContent = Math.floor(percentage).toFixed(0);
+            }
+        } else {
+            // Update bar progress in-place
+            const fill = this.eGui.querySelector('.progress-bar-fill');
+            const textEl = this.eGui.querySelector('.progress-text');
+            if (fill) {
+                fill.style.width = percentage + '%';
+                fill.style.background = fillColor;
+            } else if (percentage > 0) {
+                // Bar didn't exist before (was 0%), create it with transition
+                const barContainer = this.eGui.querySelector('.progress-bar-container');
+                if (barContainer) {
+                    const newFill = document.createElement('div');
+                    newFill.className = 'progress-bar-fill';
+                    newFill.style.cssText = `width:0%;height:100%;background:${fillColor};border-radius:${config.barHeight/2}px;transition:width 0.4s ease, background-color 0.4s ease`;
+                    barContainer.appendChild(newFill);
+                    // Force reflow then set target width to trigger animation
+                    newFill.offsetWidth;
+                    newFill.style.width = percentage + '%';
+                }
+            }
+            if (textEl) {
+                textEl.textContent = Math.floor(percentage) + '%';
+            }
         }
         return true;
     }
