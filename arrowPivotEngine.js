@@ -116,8 +116,10 @@ export class ArrowAgPivotAdapter {
         this._onEpoch = this._handleEpoch.bind(this);
         this._offEpoch = this.engine.onEpochChange(this._onEpoch);
 
-        this._onDerivedDirty = this._handleDerivedDirty.bind(this);
-        this._offDerived = this.engine.onDerivedDirty(this._onDerivedDirty)
+        // derived-dirty subscription removed: epoch-change payload now includes
+        // expanded dependent columns (via getDependentsClosure in the engine's
+        // coalescing callback), so _handleEpoch already sees derived column names
+        // in colsChanged and triggers the appropriate hard/soft refresh.
 
         this._updateGrandTotalSkews = debounce(this._debounced_updateGrandTotalSkews.bind(this), 100);
         this._rebuildSets = debouncePerArgs(this.raw_rebuildSets.bind(this), 150, {trailing:true});
@@ -634,8 +636,6 @@ export class ArrowAgPivotAdapter {
     dispose() {
         try { this._offEpoch && this._offEpoch(); } catch {}
         this._offEpoch = null;
-        try { this._offDerived && this._offDerived(); } catch {}
-        this._offDerived = null;
         try { this._headerContextMenuController?.abort(); } catch {}
         if (this._debounceTimer) { clearTimeout(this._debounceTimer); this._debounceTimer = null; }
         this._rowMap.clear();
@@ -2611,10 +2611,6 @@ export class ArrowAgPivotAdapter {
     }
 
     /* --------------------------- engine epoch wiring -------------------------- */
-    _handleDerivedDirty(columns) {
-        const payload = {colsChanged: columns};
-        return this._handleEpoch(payload);
-    }
 
     _handleEpoch(payload) {
         try {
