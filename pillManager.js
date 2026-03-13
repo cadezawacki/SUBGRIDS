@@ -488,10 +488,15 @@ export default class PillManager {
     }
 
     _fanoutEngineDirty(changes) {
+        const changed = changes?.colsChanged;
+        if (!changed) return;
+        const isGlobal = changed === true;
+        const changedSet = isGlobal ? null : (changed instanceof Set ? changed : new Set(Array.isArray(changed) ? changed : [changed]));
         for (const pill of this.pills.values()) {
-            if (!pill.columns) continue;
-            const cols = ensure_list(pill.columns)
-            if (cols.some(c => changes.colsChanged.includes(c))) {
+            if (!pill.columns || pill.source === 'store') continue;
+            if (isGlobal) { pill.update(); continue; }
+            const cols = ensure_list(pill.columns);
+            if (cols.some(c => changedSet.has(c))) {
                 pill.update();
             }
         }

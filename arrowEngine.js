@@ -18,6 +18,7 @@ import {asyncForEach} from 'modern-async';
 import {writeObjectToClipboard, writeStringToClipboard} from "@/utils/clipboardHelpers.js";
 import {std, mean, median, quantileSeq} from 'mathjs';
 import {HyperTable} from '@/utils/hyperTable.js';
+import {CadesEmitter} from '@/utils/cades-emitter.js';
 import {PasteOverrideManager} from '@/grids/js/arrow/overrideManager.js';
 
 
@@ -535,14 +536,7 @@ function diagonalJoinObj(obj1, obj2) {
 
 /* ---------------------------------- Emitter ---------------------------------- */
 
-export class MiniEmitter {
-    constructor(){ this._m = new Map(); }
-    on(ev, fn){ if(!this._m.has(ev)) this._m.set(ev, new Set()); this._m.get(ev).add(fn); return () => this.off(ev, fn); }
-    off(ev, fn){ try{ const s = this._m.get(ev); if(s){ s.delete(fn); if(s.size===0) this._m.delete(ev); } }catch{} }
-    emit(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}]:`, e); } } }
-    emitAsync(ev, ...args){ const s=this._m.get(ev); if(!s||s.size===0) return; setTimeout(()=>{ for(const f of s){ try{ f(...args); }catch(e){ console.error(`MiniEmitter[${ev}] async:`, e); } } }, 0); }
-    dispose(){ this._m.clear(); }
-}
+/* MiniEmitter removed — engine now uses CadesEmitter for all internal events */
 
 /* ---------------------------------- Edits ---------------------------------- */
 
@@ -1076,7 +1070,6 @@ export class ArrowEngine {
         this._useEpochCache = !!useEpochCache;
         this._epochQueue = [];
         this._epochScheduled = false;
-        this._suppressEpochEmit = false;
         this._dtypes = null;
 
         this._pool = new TypedArrayPool();
@@ -1084,7 +1077,7 @@ export class ArrowEngine {
         this._tableReplaceSeq = 0;
 
         this.emitter = this.context.page.emitter;
-        this._em = new MiniEmitter();
+        this._em = new CadesEmitter({ maxListeners: 0 });
         this._editCoalescer = new EditSignalCoalescer(this.emitter, this, {
             eventNameBatch: 'cell-edit',
             eventNamePerRow: 'row-edit',
@@ -1192,34 +1185,22 @@ export class ArrowEngine {
 
     /* -------------------------------- events -------------------------------- */
 
-    onEpochChange(fn){ return this._em.on('epoch-change', fn); }
-    onMaterialize(fn){ return this._em.on('table-materialized', fn); }
-    onDerivedDirty(fn){ return this._em.on('derived-dirty', fn); }
-    onColumnChanged(column, fn){ return this._em.on(`column-changed-${this._normalizeColumnSelector(column)}`, fn); }
-    _emitMaterialize(rows, cols){ this._em.emitAsync('table-materialized', rows, cols); }
-    _notifyDerivedDirty(name){ this._em.emitAsync('derived-dirty', new Set(asArray(name))); }
-    _notifyColumnChanged(columns){
-        if (!columns) return;
-        const distinct = new Set(asArray(columns));
-        distinct.forEach(col => {
-            this._em.emitAsync(`column-changed-${this._normalizeColumnSelector(col)}`)
-        });
-    }
+    // Returns a callable unsubscribe function so callers can do: const off = engine.onX(fn); off();
+    _wrapOff(token) { return () => { try { this._em.offToken(token); } catch (_) {} }; }
+
+    onEpochChange(fn){ return this._wrapOff(this._em.on('epoch-change', fn)); }
+    onMaterialize(fn){ return this._wrapOff(this._em.on('table-materialized', fn)); }
+    onDerivedDirty(fn){ return this._wrapOff(this._em.on('derived-dirty', fn)); }
+    _emitMaterialize(rows, cols){ this._em.emit('table-materialized', rows, cols); }
+    _notifyDerivedDirty(name){ this._em.emit('derived-dirty', new Set(asArray(name))); }
 
     _notifyColumnEvent(event) {
-        this._em.emitAsync(`grid:ColumnEvent-${event}`)
+        this._em.emit(`grid:ColumnEvent-${event}`)
     }
-    onColumnEvent(event, fn) {this._em.on(`grid:ColumnEvent-${event}`, fn);}
-    onTableWillReplace(fn){return this._em.on('table-will-replace', fn);}
-    onTableDidReplace(fn){return this._em.on('table-did-replace', fn);}
+    onColumnEvent(event, fn) { return this._wrapOff(this._em.on(`grid:ColumnEvent-${event}`, fn)); }
+    onTableWillReplace(fn){ return this._wrapOff(this._em.on('table-will-replace', fn)); }
+    onTableDidReplace(fn){ return this._wrapOff(this._em.on('table-did-replace', fn)); }
     _emitEpochChange(payload, event='epoch-change') {
-        // Suppress epoch emissions triggered as side-effects of _handleEpoch
-        // (e.g. _getRows → grid$.set → settings listener → _bumpColEpochByName).
-        // These are rendering reflections, not new data — re-emitting them causes
-        // an infinite cycle: _handleEpoch → refreshServerSide → _getRows → grid$.set
-        // → settings onChanges → _bumpColEpochByName → _emitEpochChange → _handleEpoch → ∞
-        if (this._suppressEpochEmit) return;
-
         this._epochQueue.push(payload);
         if (!this._epochScheduled) {
             this._epochScheduled = true;
@@ -1229,7 +1210,37 @@ export class ArrowEngine {
                 this._epochScheduled = false;
                 if (this._disposed || !this._em) return;
                 const coalesced = this._coalesceEpochs(batch);
-                this._em.emitAsync(event, coalesced);
+
+                // Expand to transitive dependents and identify dirty derived columns.
+                // This is the single place dependency expansion + derived-dirty notification
+                // happens, eliminating the previous double-fire from flush() + _handleEpoch.
+                let allCols = coalesced.colsChanged;
+                if (allCols && allCols !== true) {
+                    const arr = Array.isArray(allCols) ? allCols : [allCols];
+                    const closure = this.getDependentsClosure(arr);
+                    // getDependentsClosure returns seeds + dependents; check for new columns
+                    if (closure.length > arr.length) {
+                        const dirtyDerived = closure.filter(c => this._isDerived(c));
+                        if (dirtyDerived.length) {
+                            this._em.emit('derived-dirty', new Set(dirtyDerived));
+                        }
+                        allCols = closure;
+                        coalesced.colsChanged = allCols;
+                    } else {
+                        // No dependents beyond seeds — still check if seeds themselves are derived
+                        const dirtyDerived = arr.filter(c => this._isDerived(c));
+                        if (dirtyDerived.length) {
+                            this._em.emit('derived-dirty', new Set(dirtyDerived));
+                        }
+                    }
+                }
+
+                // Clear caches for all affected columns so downstream reads are fresh.
+                this._clearCellCaches(allCols === true ? true : (allCols || []));
+
+                // Synchronous broadcast — subscribers own their own scheduling
+                // (debounce, rAF, etc). No extra setTimeout hop.
+                this._em.emit(event, coalesced);
             }, 0);
         }
     }
@@ -1250,7 +1261,7 @@ export class ArrowEngine {
             const nextNumRows = nextTable ? (nextTable.numRows | 0) : 0;
             const prevNumCols = prevTable ? (prevTable.numCols | 0) : 0;
             const nextNumCols = nextTable ? (nextTable.numCols | 0) : 0;
-            this._em.emitAsync('table-did-replace', { prevNumRows, nextNumRows, prevNumCols, nextNumCols });
+            this._em.emit('table-did-replace', { prevNumRows, nextNumRows, prevNumCols, nextNumCols });
         } catch {}
     }
 
@@ -2417,19 +2428,16 @@ export class ArrowEngine {
                     if (key === "*") {
                         add(dict.onChanges(()=>{
                             this._bumpColEpochByName(name);
-                            this._notifyDerivedDirty(name);
                             this._unfreezeAllFrozenFor(name);
                         }))
                     } else if (typeof dict.onValueAddedOrChanged === 'function'){
                         add(dict.onValueAddedOrChanged(key, () => {
                             this._bumpColEpochByName(name);
-                            this._notifyDerivedDirty(name);
                             this._unfreezeAllFrozenFor(name);
                         }));
                     } else if (typeof dict.onChange === 'function'){
                         add(dict.onChange(key, () => {
                             this._bumpColEpochByName(name);
-                            this._notifyDerivedDirty(name);
                             this._unfreezeAllFrozenFor(name);
                         }));
                     }
@@ -4185,7 +4193,7 @@ export class ArrowEngine {
         this._pool.clear();
 
         // Dispose the internal emitter
-        if (this._em && typeof this._em.dispose === 'function') this._em.dispose();
+        if (this._em) { try { this._em.destroy(); } catch (_) {} }
         this._em = null;
 
         // Clear epoch queue
@@ -4256,13 +4264,6 @@ export class ArrowAgGridAdapter {
         this.searchManager = new GlobalSearchManager(this);
 
         this._em = this.context.page.emitter;
-        // _handleEpoch disabled: flush() already expands dependents via
-        // getDependentsClosure and clears cell caches.  The epoch listener was
-        // redundant and caused an infinite cycle (grid$.set → settings listener
-        // → _bumpColEpochByName → _emitEpochChange → _handleEpoch → refreshServerSide
-        // → _getRows → grid$.set → ∞).
-        this._onEpoch = null;
-        this._offEpoch = null;
 
         this._memo = memoize;
         this._guessWidth = this._guessWidthRaw // this._memo(this._guessWidthRaw.bind(this));
@@ -5329,9 +5330,6 @@ export class ArrowAgGridAdapter {
     }
 
     dispose() {
-        try { this._offEpoch && this._offEpoch(); } catch {}
-        this._offEpoch = null;
-
         // Clear trackers
         this.dirty.rows.clear();
         this.dirty.cols.clear();
@@ -5883,114 +5881,9 @@ export class ArrowAgGridAdapter {
         this._idxCacheIdx = null;
     }
 
-    _handleEpoch(payload) {
-        if (this._inHandleEpoch) {
-            console.error('[REENTRANT] _handleEpoch called while already executing!', new Error().stack);
-            return;
-        }
-        this._inHandleEpoch = true;
-        // Suppress epoch emissions during epoch handling — any _emitEpochChange
-        // calls triggered by refreshServerSide/grid$.set/settings listeners are
-        // side-effects of rendering, not new data changes.
-        this.engine._suppressEpochEmit = true;
-        try {
-        this._invalidateIdxCache();
-        const api = this.api;
-        if (!api) return;
-        const saved = api.getCellRanges?.();
-        let allCols;
-
-        try {
-
-            const normalizeCols = (x) => {
-                if (x === true) return true;           // sentinel for “all columns”
-                if (!x) return null;                   // undefined/null → none
-                if (typeof x === 'string') return [x]; // single column name
-                if (Array.isArray(x)) return x.slice();
-                if (x instanceof Set) return Array.from(x);
-                try { return Array.from(x); } catch { return null; }
-            };
-
-            const normalizeRows = (x) => {
-                if (x === true) return true;           // sentinel for “all rows”
-                if (!x) return null;
-                if (x instanceof Int32Array) return x;
-                if (Array.isArray(x)) return Int32Array.from(x);
-                if (x instanceof Set) return Int32Array.from(x);
-                try { return Int32Array.from(x); } catch { return null; }
-            };
-
-            let cols = normalizeCols(payload?.colsChanged);
-            let rows = normalizeRows(payload?.rowsChanged);
-
-            // Expand dependents if we have a concrete column list
-            allCols = cols;
-            if (cols && cols !== true) {
-                const deps = this.engine.getDependentsClosure(cols);
-                const dirtyDerived = deps.filter(col => this.engine._isDerived(col));
-                if (dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
-                allCols = Array.from(new Set(cols.concat(deps)));
-            }
-
-            // Clear caches for affected columns
-            this.engine._clearCellCaches(allCols === true ? true : (allCols || []));
-
-            // If global rows or global cols, let SSRM refresh
-            const bigRefresh = (rows === true) || (allCols === true) || (!rows && !allCols);
-            if (bigRefresh) {
-                api.refreshServerSide?.({ purge: false });
-                this._applyCellRange(saved);
-                this.engine._notifyColumnChanged(allCols);
-                return;
-            }
-
-            // Targeted cell/column/row refreshes
-            if (rows && allCols) {
-                if (allCols !== true) {
-                    const work = rows.length * allCols.length;
-                    if (work > 4096) {
-                        api.refreshServerSide?.({ purge: false });
-                        this._applyCellRange(saved);
-                        this.engine._notifyColumnChanged(allCols);
-                        return;
-                    }
-                    for (let i = 0; i < rows.length; i++) {
-                        const r = rows[i] | 0;
-                        for (let j = 0; j < allCols.length; j++) this.markCell(r, allCols[j]);
-                    }
-                    this.engine._notifyColumnChanged(allCols);
-                    return;
-                }
-                api.refreshServerSide?.({ purge: false }); // rows present + all cols sentinel
-                this._applyCellRange(saved);
-                this.engine._notifyColumnChanged(allCols);
-                return;
-            }
-
-            if (allCols && allCols !== true) {
-                for (let i = 0; i < allCols.length; i++) this.markColumn(allCols[i]);
-                this.engine._notifyColumnChanged(allCols);
-                return;
-            }
-
-            if (rows && rows !== true) {
-                for (let i = 0; i < rows.length; i++) this.markRow(rows[i] | 0);
-                this.engine._notifyColumnChanged(allCols);
-                return;
-            }
-
-            api.refreshServerSide?.({ purge: false });
-            this._applyCellRange(saved);
-            this.engine._notifyColumnChanged(allCols);
-        } catch (e) {
-            try {
-                this.api?.refreshServerSide?.({ purge: false });
-                if (saved) this._applyCellRange(saved);
-                if (allCols !== undefined) this.engine._notifyColumnChanged(allCols);
-            } catch {}
-        }
-        } finally { this.engine._suppressEpochEmit = false; this._inHandleEpoch = false; }
-    }
+    /* _handleEpoch removed — was dead code (never registered as listener).
+       Dependency expansion + cache clearing now handled by engine._emitEpochChange.
+       Grid cell refresh handled by flush(). */
 
     _getCurrentSortCols() {
         try {
@@ -6049,17 +5942,9 @@ export class ArrowAgGridAdapter {
         suppressFlash = (typeof rowNodes === 'undefined') || (columns && columns.length > 5);
 
         // Clear cached class-rules / formatters for dirty columns so refreshCells
-        // picks up fresh values.  Previously handled by _handleEpoch.
+        // picks up fresh values.  Dependency expansion + derived-dirty notification
+        // is handled centrally by engine._emitEpochChange's coalescing callback.
         if (columns) this.engine._clearCellCaches(columns);
-
-        // Notify external listeners (e.g. pivot adapter) that derived columns
-        // are dirty.  Previously done inside _handleEpoch; moved here so the
-        // notification fires without the infinite epoch cycle.
-        if (columns) {
-            const dirtyDerived = columns.filter(c => this.engine._isDerived(c));
-            if (dirtyDerived.length) this.engine._notifyDerivedDirty(dirtyDerived);
-            this.engine._notifyColumnChanged(columns);
-        }
 
         api.refreshCells?.({ rowNodes, columns, force: true, suppressFlash });
 
